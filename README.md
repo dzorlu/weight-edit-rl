@@ -8,7 +8,7 @@ Built for the [AI Research Hackathon](https://luma.com/sht6n8du), San Francisco,
 
 ## Results so far
 
-Target: Qwen3.5-0.8B. Task: math. One search per row. Held-out MATH-500, 1,000 answers per arm.
+Target: Qwen3.5-0.8B. Task: math. One search per row. Test set MATH-500, 1,000 answers per arm, run once after each search. The editor works on train problems (MATH and GSM8K training sets) and checks its final edit on validation problems it set aside.
 
 | Editor | Original | Edited | Change |
 |---|---|---|---|
@@ -53,7 +53,7 @@ The RL loop has run one full step on a small test (4 rollouts, 8 forward passes 
 - **Rollout.** One editing search on a fresh copy of the target. The editor calls two tools until it submits an edit or keeps the original weights.
 - **`python` tool.** A CPU sandbox with the target's weights on disk: load a tensor, analyse it, save an edited tensor. No internet, no gradients.
 - **`forward` tool.** Runs the target on a GPU. Either it answers practice problems (original weights, edited weights, or both side by side), or it reads supplied text and returns log-probabilities and activations. The number of calls is limited.
-- **Reward.** Accuracy with the submitted edit minus accuracy with the original weights, on problems the editor never sees. The editor always submits its best edit, so a harmful edit scores below zero.
+- **Reward.** Accuracy with the submitted edit minus accuracy with the original weights, on a hidden reward set the editor never sees. The editor always submits its best edit, so a harmful edit scores below zero.
 - **Web and library (optional).** `web_search` and `web_read` let the editor look up methods and read papers. What it saves in `/library` is kept for later rollouts. Pages that publish an edit for this exact model are filtered out.
 - **RL step.** A group of rollouts from the current checkpoint, one policy-gradient update on Tinker, a new checkpoint.
 
