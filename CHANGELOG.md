@@ -4,6 +4,11 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**Hero run restarted as `hero2`** (13:45). In `hero1` a target machine ran out of memory and was replaced, which reset that rollout's sandbox, including its saved edit, without telling the editor. Rollout logs were also only saved at the end of a step.
+- Target memory doubled to 96 GB.
+- The harness checks after every tool call whether the target machine was replaced, and if so tells the editor that `/work`, its variables and its edit are gone. Each rollout records how many times this happened.
+- Rollout logs are saved to the volume every 8 turns, so a step can be watched while it runs.
+
 **Hero run started** (`hero1`, 13:06): 6 RL steps of 8 rollouts, 32 forward passes and 120 minutes per rollout, web and library on, reward on 128 problems × 2 samples. First run with every change below.
 
 **Problem sets named train, validation, test and reward set** in the README and on the website. The editor's prompt still says "practice", to keep rollouts comparable.

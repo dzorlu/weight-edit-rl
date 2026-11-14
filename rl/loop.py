@@ -383,6 +383,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         ctx = 0
         if web:
             await tgt.put_files.remote.aio(LIBRARY, json.dumps(lib_files()))
+        boot = await tgt.boot_id.remote.aio()
+        restarts = 0
         log = open(f"{d}/{rid}.jsonl", "a")
         w = lambda rec: (log.write(json.dumps(rec) + "\n"), log.flush())
         def status():
@@ -493,7 +495,16 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                             res = "[the search failed: " + repr(e)[:200] + "]"
                 else:
                     body, res = tc.function.arguments[:2000], f"[unknown tool {kind!r}; the tools are python and forward]"
-                w({"turn": turn, "tool": kind, "input": body[:20000], "result": res[:20000], "used_f": used_f, "used_py": used_py})
+                now = await tgt.boot_id.remote.aio()
+                if now != boot:  # the target machine was replaced (for example after running out of memory): /work and the kernel are gone
+                    boot, restarts = now, restarts + 1
+                    res = (res + "\n\n[The target machine restarted after this call, probably because it ran out of memory. /work was reset and all python variables are lost, "
+                           "including any saved edit: save your edit again. Keep large arrays out of memory: load activations for a few layers at a time.]")
+                    if web:
+                        await tgt.put_files.remote.aio(LIBRARY, json.dumps(lib_files()))
+                w({"turn": turn, "tool": kind, "input": body[:20000], "result": res[:20000], "used_f": used_f, "used_py": used_py, "target_restarts": restarts})
+                if turn % 8 == 0:
+                    await runs.commit.aio()  # so a running step can be watched
                 if len(res) > 6000:
                     res = res[:6000] + "\n[output cut at 6,000 characters]"
                 extra = ""
@@ -526,7 +537,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 w({"snapshot_error": repr(e)[:300]})
             usd = (tok["prefill"] * PRICE["prefill"] + tok["cached"] * PRICE["cached"] + tok["sampled"] * PRICE["sample"]) / 1e6
             info = {"rid": rid, "ok": True, "reward": round(reward, 4), "edited_accuracy": acc_e, "edited_hit_cap": cap_e, "edited_tensors": rw["edited_tensors"], "ended": ended,
-                    "turns": turn, "forward_used": used_f, "python_used": used_py, "web_used": used_web, "minutes": round((time.time() - t0) / 60, 1), "tokens": tok, "sampling_usd": round(usd, 3)}
+                    "turns": turn, "forward_used": used_f, "python_used": used_py, "web_used": used_web, "target_restarts": restarts, "minutes": round((time.time() - t0) / 60, 1), "tokens": tok, "sampling_usd": round(usd, 3)}
             info["library_files"] = sorted(lib_out)
             w({"summary": info, "final_text": final_text})
             return Trajectory(transitions=transitions, final_ob=tinker.ModelInput.empty()), info, lib_out

@@ -340,7 +340,7 @@ for line in sys.stdin:
 
 # ----------------------------------------------------------------------------- Target
 @app.cls(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, block_network=True,
-         timeout=75 * 60, scaledown_window=20 * 60, max_containers=1, memory=49152, cpu=8)
+         timeout=150 * 60, scaledown_window=20 * 60, max_containers=1, memory=98304, cpu=8)
 class Target:
     rid: str = modal.parameter(default="")  # one container per value, so each rollout gets its own target
 
@@ -368,6 +368,8 @@ class Target:
         self.hf_state = "original"
         self.hf_backup = {}
         self.k = 0
+        import uuid
+        self.boot = uuid.uuid4().hex  # changes if the container is replaced, which resets /work
         # Answers of the original weights that were generated before (same prompt, seed and token cap): served instead of regenerated.
         self.ocache = {}
         import glob
@@ -682,6 +684,10 @@ class Target:
             self._ensure_edited_server()
             out["edited"] = slim(self._gen("edited", 8002, items, n, max_tokens))
         return out
+
+    @modal.method()
+    def boot_id(self) -> str:
+        return self.boot
 
     @modal.method()
     def put_files(self, root: str, files_json: str):
