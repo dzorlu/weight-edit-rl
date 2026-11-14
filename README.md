@@ -17,6 +17,8 @@ Target: Qwen3.5-0.8B. Task: math. One search per row. Held-out MATH-500, 1,000 a
 | Inkling 2 Small, first search | 6.6% | 20.2% | +13.6 |
 | Inkling 2 Small, second search | 6.6% | 11.8% | +5.2 |
 
+Every edit tried so far, sorted by kind: [a map of weight edits](https://tinkerings.dev/posts/weight-edits/). Every search and rollout, turn by turn: [trajectories](https://tinkerings.dev/posts/weight-edits/traces/).
+
 Qwen3.5-0.8B fails at math in one way: it writes "Wait..." and rechecks until it runs out of tokens. Every gain above comes from stopping that. Transcripts and scores are in `results/searches/`.
 
 The RL loop has run one full step on a small test (4 rollouts, 8 forward passes each): rewards of +13.3, +4.7, 0 and 0 points, one policy-gradient update, one checkpoint. Rollouts are in `results/rl/smoke3/`. A trained editor has not been compared with an untrained one yet.
