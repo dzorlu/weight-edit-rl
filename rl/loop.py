@@ -4,6 +4,7 @@ One RL step: sample a group of rollouts with the current checkpoint, score each 
 take one policy-gradient step on Tinker, save a checkpoint.
 
     uvx modal run -m rl.loop::prep_reward_set          # once
+    uvx modal run -m rl.loop::prep_practice_index      # once: index and ready-made splits of the practice problems
     uvx modal run -m rl.loop::prep_baseline            # once: the original weights' answers every rollout starts from
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32
 
@@ -60,7 +61,8 @@ WHAT IS ALREADY KNOWN ABOUT THIS MODEL. You do not need to spend a forward pass 
 Do not use these baseline problems to confirm an edit.
 
 SANDBOX NOTES.
-- Practice ids look like "math/geometry/461" and "gsm8k/2754". Take them from /practice/problems.jsonl; do not guess them.
+- Practice ids look like "math/geometry/461" and "gsm8k/2754". /practice/index.tsv lists every problem (id, source, level, subject); /practice/problems.jsonl has the full text and reference solutions. Do not guess ids.
+- /practice/splits.json holds ready-made disjoint lists of ids: "baseline" (already answered by the original weights, see above), "select" (256 problems for choosing between edits), "confirm_1" and "confirm_2" (256 each, never to be used for a choice), and "extra" (the rest). Use these; do not build your own.
 - Tensor names: model.language_model.layers.<L>.mlp.{{gate_proj,up_proj,down_proj}}.weight for L = 0..23. Layers 3, 7, 11, 15, 19, 23 have full attention (…layers.<L>.self_attn.{{q_proj,k_proj,v_proj,o_proj}}.weight); the other layers have linear attention (…layers.<L>.linear_attn.…, see NAMES).
 - load(name) returns a float32 torch tensor. save_edit(name, tensor) takes a torch tensor of the same shape; convert numpy arrays with torch.from_numpy(a).float().
 - tok is a tokenizers.Tokenizer: tok.encode(text).ids, tok.decode(ids), tok.token_to_id(s).
@@ -72,7 +74,9 @@ FREE_REIN_NEW = ("C. Write the edit. The forms below are starting points that ha
                  "(MLP gate_proj and up_proj, attention query, key, value and output projections, several layers at once, combinations, or a method of your own or from a paper you read), "
                  "as long as you test it. The listed forms change a matrix that writes into the residual stream (MLP down_proj, attention output projection).")
 DIAG_OLD_START, DIAG_OLD_END = "1. Open with one large generation on the original weights", "2. Before any analysis"
-DIAG_NEW = "1. Start from the baseline answers in /practice/baseline (see WHAT IS ALREADY KNOWN): count how many are cut at the token limit, and find which words or phrases are far more frequent in the failed texts than in the completed ones.\n"
+DIAG_NEW = ("1. Start from the baseline answers in /practice/baseline (see WHAT IS ALREADY KNOWN): count how many are cut at the token limit, and find which words or phrases are far more frequent in the failed texts than in the completed ones.\n"
+            "2. Use the splits in /practice/splits.json: choose between edits on \"select\", and confirm the final candidate on \"confirm_1\" and \"confirm_2\", which must not be used for any choice.\n")
+SPLIT_OLD_END = "\n\nB. Locate the component."
 
 
 def exa_search(query, key):
@@ -174,8 +178,8 @@ def editor_prompt(forward_budget, web=False, known=None):
     body = body.replace(FREE_REIN_OLD, FREE_REIN_NEW)
     extra = ""
     if known:
-        a, b = body.index(DIAG_OLD_START), body.index(DIAG_OLD_END)
-        body = body[:a] + DIAG_NEW + body[b:]
+        a, b = body.index(DIAG_OLD_START), body.index(SPLIT_OLD_END)  # replaces steps 1 and 2 of the guide
+        body = body[:a] + DIAG_NEW.rstrip() + body[b:]
         extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"])
     if web:
         extra += WEB_TEXT
@@ -235,6 +239,29 @@ open('/practice/baseline/SUMMARY.txt', 'w').write("\n".join(lines) + "\n")
 json.dump({"n": len(rows), "summary": "\n".join(lines)}, open('/practice/baseline/meta.json', 'w'))
 print("\n".join(lines))
 """
+
+
+@app.function(image=base_src, volumes={"/runs": runs}, timeout=900)
+def prep_practice_index(n_math: int = 192, n_gsm: int = 64):
+    """Once per target: a compact index of the practice problems and ready-made disjoint splits, so editors do not guess ids."""
+    import json, random
+    d = "/runs/data/math_practice"
+    rows = [json.loads(l) for l in open(f"{d}/problems.jsonl")]
+    with open(f"{d}/index.tsv", "w") as f:
+        f.write("id\tsource\tlevel\tsubject\n")
+        for r in rows:
+            subject = r["id"].split("/")[1] if r["source"] == "math_train" else "word_problem"
+            f.write(f"{r['id']}\t{r['source']}\t{r.get('level') or '-'}\t{subject}\n")
+    m = [r["id"] for r in rows if r["source"] == "math_train"]; g = [r["id"] for r in rows if r["source"] == "gsm8k_train"]
+    random.Random(7).shuffle(m); random.Random(7).shuffle(g)  # the same order prep_baseline uses
+    take = lambda k: m[n_math + 192 * k: n_math + 192 * (k + 1)] + g[n_gsm + 64 * k: n_gsm + 64 * (k + 1)]
+    splits = {"baseline": m[:n_math] + g[:n_gsm], "select": take(0), "confirm_1": take(1), "confirm_2": take(2)}
+    used = set(sum(splits.values(), []))
+    splits["extra"] = [i for i in m + g if i not in used]
+    assert sum(len(v) for v in splits.values()) == len(set(sum(splits.values(), []))) == len(rows)
+    json.dump(splits, open(f"{d}/splits.json", "w"))
+    runs.commit()
+    print({k: len(v) for k, v in splits.items()}, "| first ids", splits["select"][:2], splits["select"][-1])
 
 
 @app.function(image=rl_image, volumes={"/runs": runs}, timeout=3600)
