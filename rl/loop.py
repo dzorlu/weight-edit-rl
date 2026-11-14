@@ -6,6 +6,7 @@ take one policy-gradient step on Tinker, save a checkpoint.
     uvx modal run -m rl.loop::prep_reward_set          # once
     uvx modal run -m rl.loop::prep_practice_index      # once: index and ready-made splits of the practice problems
     uvx modal run -m rl.loop::prep_baseline            # once: the original weights' answers every rollout starts from
+    uvx modal run -m rl.loop::prep_originals           # once: the original weights' answers on the splits, served from a cache
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32
 
 Cost bounds: each rollout holds one L40S for at most `rollout_minutes`; the whole run stops at `hours`.
@@ -66,7 +67,8 @@ SANDBOX NOTES.
 - Tensor names: model.language_model.layers.<L>.mlp.{{gate_proj,up_proj,down_proj}}.weight for L = 0..23. Layers 3, 7, 11, 15, 19, 23 have full attention (…layers.<L>.self_attn.{{q_proj,k_proj,v_proj,o_proj}}.weight); the other layers have linear attention (…layers.<L>.linear_attn.…, see NAMES).
 - load(name) returns a float32 torch tensor. save_edit(name, tensor) takes a torch tensor of the same shape; convert numpy arrays with torch.from_numpy(a).float().
 - tok is a tokenizers.Tokenizer: tok.encode(text).ids, tok.decode(ids), tok.token_to_id(s).
-- A generation with "model": "both" takes at most 256 answers per model; with one model at most 512.
+- The original weights' answers to every problem in "select", "confirm_1" and "confirm_2" (2 samples each, 8192-token cap) are already in /practice/original/<split>.jsonl. Read them there; do not spend a forward pass on them. A generation with "model": "both" on these problems only has to run the edited weights, so it returns in about half the time. This holds for "n": 2 or 1 and "max_tokens": 8192.
+- A generation with "model": "both" takes at most 256 answers per model; with one model at most 512. One split with "n": 1 is 256 answers; half a split with "n": 2 is 256 answers.
 - Tool output is shown up to about 6,000 characters. Print summaries, and keep long results in files."""
 
 FREE_REIN_OLD = "C. Write the edit. These forms all change a matrix that writes into the residual stream (MLP down_proj, attention output projection)."
@@ -278,6 +280,26 @@ async def prep_baseline(n_math: int = 192, n_gsm: int = 64):
     assert ok, res
     print(await tgt.py.remote.aio(BASELINE_CODE))
     await tgt.snapshot.remote.aio("rl/_baseline_work")  # commits the runs volume, where /practice lives
+
+
+@app.function(image=rl_image, volumes={"/runs": runs}, timeout=3600)
+async def prep_originals(splits: str = "select,confirm_1,confirm_2"):
+    """Once per target: the original weights' answers on the ready-made splits. The forward tool serves them from this cache."""
+    import asyncio, json
+    runs.reload()
+    sp = json.load(open("/runs/data/math_practice/splits.json"))
+
+    async def one(name):
+        tgt = Target.with_options(scaledown_window=60)(rid=f"originals-{name}")
+        ok, res = await tgt.forward.remote.aio(json.dumps({"type": "generate", "model": "original", "problems": sp[name], "n": 2, "max_tokens": GEN_CAP}))
+        assert ok, res
+        print(await tgt.py.remote.aio(
+            "import os, shutil, json\nos.makedirs('/practice/original', exist_ok=True)\n"
+            f"shutil.copy('/work/gen_1.jsonl', '/practice/original/{name}.jsonl')\n"
+            f"rows = [json.loads(l) for l in open('/work/gen_1.jsonl')]\nprint('{name}', len(rows), 'answers,', round(100 * sum(r['correct'] for r in rows) / len(rows), 1), '% correct')"))
+        await tgt.snapshot.remote.aio(f"rl/_originals_work_{name}")  # commits the runs volume
+
+    await asyncio.gather(*[one(n) for n in splits.split(",")])
 
 
 @app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol}, secrets=[modal.Secret.from_name("tinker"), modal.Secret.from_name("exa")],

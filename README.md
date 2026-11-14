@@ -69,8 +69,11 @@ uvx modal run -m rl.loop::prep_reward_set
 # one search with Inkling 2 Small as the editor, then the held-out test
 uvx modal run --detach -m editors.tinker_openai::oai --run-id inkling-1
 
-# once: the original weights' answers that every rollout starts from
+# once: an index and ready-made splits of the practice problems, and the original
+# weights' answers on them, which every rollout starts from and the forward tool reuses
+uvx modal run -m rl.loop::prep_practice_index
 uvx modal run -m rl.loop::prep_baseline
+uvx modal run -m rl.loop::prep_originals
 
 # the RL loop: 8 steps of 8 rollouts, 32 forward passes per rollout; --web adds web search and a shared paper library
 uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32 --web

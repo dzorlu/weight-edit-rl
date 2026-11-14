@@ -368,6 +368,13 @@ class Target:
         self.hf_state = "original"
         self.hf_backup = {}
         self.k = 0
+        # Answers of the original weights that were generated before (same prompt, seed and token cap): served instead of regenerated.
+        self.ocache = {}
+        import glob
+        for f in glob.glob("/runs/data/math_practice/original/*.jsonl") + glob.glob("/runs/data/math_practice/baseline/original.jsonl"):
+            for line in open(f):
+                r = json.loads(line)
+                self.ocache[(r["qid"], r["sample"])] = r
         print("BOOT ok; tensors", len(self.sd_keys))
 
     def _start_kernel(self):
@@ -514,7 +521,12 @@ class Target:
             except Exception as e:
                 return False, "the edited weights could not be loaded for generation: " + repr(e)[-600:]
         if which in ("original", "both"):
-            rows_o = self._gen("original", 8001, items, n, max_tokens)
+            hit = [self.ocache.get((it["qid"], smp)) for it in items for smp in range(n)] if max_tokens == GEN_CAP else [None]
+            if all(hit):
+                rows_o = [dict(r) for r in hit]
+                out["original_from_cache"] = True
+            else:
+                rows_o = self._gen("original", 8001, items, n, max_tokens)
         if which in ("edited", "both"):
             rows_e = self._gen("edited", 8002, items, n, max_tokens)
         for tag, rows in (("original", rows_o), ("edited", rows_e)):
