@@ -11,7 +11,7 @@ RUNS = [
     dict(key="inkling-2", group="Searches on Qwen3.5-0.8B", dir="searches/inkling-2-small-2", editor="Inkling 2 Small, second search", prompt="methods", note="Same prompt as the first Inkling search. It found a different edit: 11 'Wait' columns zeroed and 8 end-of-thinking columns doubled."),
 ]
 import glob, re
-for exp in sorted(os.path.basename(p) for p in glob.glob(os.path.join("results", "rl", "*"))):  # RL runs: one entry per rollout
+for exp in sorted(os.path.basename(p) for p in glob.glob(os.path.join("results", "rl", "*")) if os.path.exists(os.path.join(p, "config.json"))):  # RL runs: one entry per rollout
     cfg = os.path.join("results", "rl", exp, "config.json")
     for f in sorted(glob.glob(os.path.join("results", "rl", exp, f"{exp}-s*-r*.jsonl"))):
         st, ro = re.search(r"-s(\d+)-r(\d+)\.jsonl$", f).groups()
