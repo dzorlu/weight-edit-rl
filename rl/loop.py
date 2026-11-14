@@ -105,6 +105,11 @@ def repair_reply(raw):
     return None
 
 
+# In RL the reward should reflect the best edit a rollout found, so the editor always submits one.
+SUBMIT_RULE_OLD = 'Submit an edit only if a paired comparison on at least 300 generations that were not used to choose it shows a gain larger than 2 standard errors. Otherwise call drop_edit on every edited tensor and submit the original weights; that is a valid result and better than submitting an edit the evidence does not support.'
+SUBMIT_RULE_RL = 'Always finish with your best edit saved in /work/edited. Your score is the accuracy of that edit minus the accuracy of the original weights on unseen problems, so a harmful edit scores below zero and the original weights score zero. Do not drop a promising edit because you ran out of budget to confirm it: submit the candidate your evidence supports best, and say how strong that evidence is.'
+
+
 def editor_prompt(forward_budget, web=False):
     a, b = PROMPT.index("WHAT COUNTS."), PROMPT.index("WHAT YOU HAVE.")
     body = PROMPT[:a] + GUIDE + "\n\n" + PROMPT[b:]
@@ -118,6 +123,8 @@ def editor_prompt(forward_budget, web=False):
     ):
         assert old in body, old
         body = body.replace(old, new)
+    assert SUBMIT_RULE_OLD in body
+    body = body.replace(SUBMIT_RULE_OLD, SUBMIT_RULE_RL)
     if web:
         b = body.index("HOW TO WORK.")
         body = body[:b].rstrip() + WEB_TEXT + "\n\n" + body[b:]
@@ -296,7 +303,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 extra = ""
                 if must_finish() and not asked_final:
                     asked_final = True
-                    extra = "\n\n[The budget or the time limit is reached. You may still run a few python calls to set /work/edited to your final choice (drop_edit everything to submit the original weights). Then reply without a tool call, starting with FINAL SUBMISSION: what you changed, the evidence, and why you expect it to help.]"
+                    extra = "\n\n[The budget or the time limit is reached. You may still run a few python calls to set /work/edited to your best edit. Then reply without a tool call, starting with FINAL SUBMISSION: what you changed, the evidence, and why you expect it to help.]"
                 messages.append({"role": "tool", "tool_call_id": tc.id or "call_1", "name": tc.function.name, "content": res + status() + extra})
                 for other in tcs[1:]:
                     messages.append({"role": "tool", "tool_call_id": other.id or "call_x", "name": other.function.name, "content": "[not run: only the first tool call of a reply is run]"})
@@ -354,8 +361,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                        training_usd=round(n_tok * PRICE["train"] / 1e6, 2), loss_sum=round(sum(m.get("loss:sum", 0.0) for m in metrics), 3), training_seconds=round(time.time() - t1))
         else:
             rec.update(trained=False, reason="all rewards equal or fewer than two rollouts finished; no gradient")
-        ck = await asyncio.to_thread(lambda: tc.save_weights_for_sampler(f"{exp}-step{step + 1}").result())
-        st = await asyncio.to_thread(lambda: tc.save_state(f"{exp}-step{step + 1}").result())
+        ck = await asyncio.to_thread(lambda: tc.save_weights_for_sampler(f"{exp}-step{step + 1}", ttl_seconds=7 * 24 * 3600).result())
+        st = await asyncio.to_thread(lambda: tc.save_state(f"{exp}-step{step + 1}", ttl_seconds=2 * 24 * 3600).result())
         rec.update(sampler_checkpoint=ck.path, state_checkpoint=st.path, minutes_total=round((time.time() - T0) / 60, 1))
         slog(rec)
     slog({"event": "done", "minutes_total": round((time.time() - T0) / 60, 1)})
