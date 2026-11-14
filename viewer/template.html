@@ -1,0 +1,180 @@
+<title>Weight-Edit Search Traces</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a fixed header with one tab per search, then a two-pane reader (turn list, turn detail) that fills the screen. */
+:root {
+  --bg: #f7f8fa; --panel: #ffffff; --sunk: #eef0f4; --fg: #1b2230; --mut: #5d6878; --line: #d9dee6;
+  --accent: #2456c9; --sel: #e2eafc; --py: #1f7a55; --fw: #a25a00; --bad: #b3261e; --good: #1f7a55;
+  --display: "Space Grotesk", "Inter", system-ui, sans-serif; --body: "Inter", system-ui, -apple-system, sans-serif; --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12151b; --panel: #181c24; --sunk: #1f242e; --fg: #e4e8ef; --mut: #98a2b3; --line: #2c3340;
+  --accent: #8fb0ff; --sel: #243352; --py: #6fcf9f; --fw: #e7a955; --bad: #ff8f85; --good: #6fcf9f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #181c24; --sunk: #1f242e; --fg: #e4e8ef; --mut: #98a2b3; --line: #2c3340;
+  --accent: #8fb0ff; --sel: #243352; --py: #6fcf9f; --fw: #e7a955; --bad: #ff8f85; --good: #6fcf9f; color-scheme: dark }
+* { box-sizing: border-box }
+html, body { height: 100% }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--body); display: flex; flex-direction: column;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 14px 12px }
+header h1 { font: 600 20px/1.2 var(--display); margin: 0; text-wrap: balance }
+header p { margin: 4px 0 0; color: var(--mut); max-width: 75ch }
+#pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 8px }
+#pick label { font: 600 12px var(--body); text-transform: uppercase; letter-spacing: .06em; color: var(--mut) }
+#runsel { font: 500 14px var(--body); padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--fg); max-width: 100%; min-width: 0 }
+#runsel:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+#runres { font-variant-numeric: tabular-nums } #runres .sub { color: var(--mut); font-size: 12px }
+.run { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; cursor: pointer; color: var(--fg); font: inherit; min-width: 0 }
+.run:hover { border-color: var(--accent) }
+.run:focus-visible, .row:focus-visible, #bar button:focus-visible, #q:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.run[aria-selected="true"] { border-color: var(--accent); background: var(--sel) }
+.run .ed { font: 600 14px/1.25 var(--display) }
+.run .res { margin-top: 3px; font-variant-numeric: tabular-nums }
+.run .sub { color: var(--mut); font-size: 12px; margin-top: 2px; font-variant-numeric: tabular-nums }
+.up { color: var(--good); font-weight: 600 } .flat { color: var(--mut); font-weight: 600 } .live { color: var(--fw); font-weight: 600 }
+#note { color: var(--mut); font-size: 13px; margin: 0 0 8px; max-width: 95ch }
+#bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px }
+#bar button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); padding: 3px 10px; border-radius: 999px; cursor: pointer; font: 13px var(--body) }
+#bar button[aria-pressed="true"] { background: var(--sel); border-color: var(--accent) }
+#q { flex: 1; min-width: 150px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); font: 13px var(--body) }
+main { flex: 1; min-height: 0; display: flex; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden }
+#list { width: 330px; flex: none; overflow: auto; border-right: 1px solid var(--line) }
+.row { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 6px 11px; cursor: pointer; color: var(--fg); font: 13px var(--body) }
+.row:hover { background: var(--sunk) } .row[aria-current="true"] { background: var(--sel) }
+.row .top { display: flex; gap: 8px; color: var(--mut); font-size: 12px; font-variant-numeric: tabular-nums }
+.tag { font-weight: 600 } .tag.python { color: var(--py) } .tag.forward { color: var(--fw) } .tag.final, .tag.prompt { color: var(--accent) }
+.row .lab { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.fail { color: var(--bad) }
+#detail { flex: 1; min-width: 0; overflow: auto; padding: 14px 18px }
+#detail h2 { font: 600 12px var(--body); text-transform: uppercase; letter-spacing: .06em; color: var(--mut); margin: 18px 0 6px }
+#detail h2:first-of-type { margin-top: 0 }
+.meta { color: var(--mut); font-size: 12px; margin-bottom: 12px; font-variant-numeric: tabular-nums }
+.prose { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 85ch }
+pre { background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.5 var(--mono) }
+.tw { overflow-x: auto } table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums }
+td, th { border: 1px solid var(--line); padding: 3px 9px; text-align: right } th { background: var(--sunk); font-weight: 500 }
+.empty { padding: 18px; color: var(--mut) }
+@media (max-width: 760px) { main { flex-direction: column } #list { width: auto; max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--line) } #detail { padding: 12px } }
+</style>
+
+<header>
+  <h1>Weight-Edit Search Traces</h1>
+  <p>Each search is one model trying to improve Qwen3.5-0.8B on math by editing its weights directly, with a Python sandbox and 50 forward passes. Pick a trajectory from the list, then step through its turns: the editor's reasoning, the tool call, and the result.</p>
+</header>
+<div id="pick"><label for="runsel">Trajectory</label><select id="runsel"></select><span id="runres"></span></div>
+<p id="note"></p>
+<div id="bar"></div>
+<main><div id="list"></div><div id="detail"><div class="empty">Loading the trace…</div></div></main>
+
+<script id="index" type="application/json">__INDEX__</script>
+<script>
+const INDEX = JSON.parse(document.getElementById('index').textContent);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const parse = s => { try { return JSON.parse(s); } catch (e) { return null; } };
+const rawReason = raw => [...(raw||'').matchAll(/to=self<\|message\|>([\s\S]*?)(?:<\|eom\|>|<\|eot\|>|$)/g)].map(m => m[1].trim()).join('\n\n');
+const rawFinal = raw => { const m = (raw||'').match(/to=user<\|message\|>([\s\S]*?)(?:<\|eot\|>|$)/); return m ? m[1].trim() : ''; };
+const signed = x => (x > 0 ? '+' : '') + x;
+const cache = {}; let cur = null, D = null, filt = 'all', query = '', sel = null;
+
+function shortResult(m) {
+  const h = m.heldout;
+  if (m.reward != null) return `  (reward ${signed(Math.round(m.reward * 1000) / 10)} pts)`;
+  if (h && h.edited != null) return `  (${signed(h.paired.diff_pp)} pts)`;
+  if (h) return '  (no edit)';
+  return m.finished ? '' : '  (in progress)';
+}
+function resultLine(m) {
+  const h = m.heldout;
+  if (m.reward != null) return `Reward ${signed(Math.round(m.reward * 1000) / 10)} points on the hidden reward set · ${m.edited_tensors} tensors edited · ${esc(m.ended)}`;
+  if (h && h.edited != null) { const d = h.paired.diff_pp, big = Math.abs(d) > 2 * h.paired.se_pp;
+    return `MATH-500 ${h.original}% → ${h.edited}% <span class="${big && d > 0 ? 'up' : 'flat'}">${signed(d)}</span>`; }
+  if (h) return `MATH-500 ${h.original}% <span class="flat">submitted no edit</span>`;
+  return m.finished ? '<span class="live">held-out test running</span>' : '<span class="live">search in progress</span>';
+}
+const runSel = document.getElementById('runsel');
+{ const groups = [...new Set(INDEX.map(m => m.group))];
+  runSel.innerHTML = groups.map(g => `<optgroup label="${esc(g)}">` + INDEX.filter(m => m.group === g).map(m => `<option value="${m.key}">${esc(m.editor)}${shortResult(m)}</option>`).join('') + '</optgroup>').join(''); }
+runSel.onchange = () => { location.hash = runSel.value; };
+
+function prep(t) {
+  if (t.kind === 'prompt') { t.label = 'what the editor was told'; return; }
+  t.reason = t.reasoning ?? rawReason(t.raw); t.finalText = t.final ?? rawFinal(t.raw);
+  t.isFinal = !t.tool && !!t.finalText && (/FINAL SUBMISSION/.test(t.finalText) || t.last);
+  t.kind = t.tool || (t.isFinal ? 'final' : 'no call');
+  t.failed = (t.result || '').startsWith('[request failed');
+  const q = t.tool === 'forward' ? parse(t.input) : null, r = t.tool === 'forward' ? parse(t.result) : null;
+  t.paired = r && r.paired_edited_minus_original ? r : null; t.gen = r && (r.original || r.edited) ? r : null;
+  if (t.tool === 'python') t.label = (t.input || '').trim().split('\n')[0];
+  else if (t.tool === 'forward') {
+    if (!q) t.label = 'request was not valid JSON';
+    else if (q.type === 'generate') t.label = `generate ${q.model}: ${(q.problems || q.prompts || []).length} problems × ${q.n || 1}`;
+    else t.label = `teacher-forced ${q.model}: ${(q.chats || q.texts || []).length} texts` + (q.return && (q.return.mlp_act || q.return.hidden_states) ? ', with activations' : '');
+    if (t.paired) { const p = r.paired_edited_minus_original; t.label += `  ·  ${signed(p.diff_pp)} pp (SE ${p.se_pp})`; }
+    else if (t.gen) { const a = r.edited || r.original; t.label += `  ·  ${a.accuracy_pct}%`; }
+  } else t.label = t.isFinal ? 'final reply' : 'reply with no runnable tool call';
+}
+const FILTERS = {all: t => true, prompt: t => t.kind === 'prompt', python: t => t.tool === 'python', forward: t => t.tool === 'forward', 'paired comparisons': t => !!t.paired,
+  'saved an edit': t => t.tool === 'python' && /save_edit\(/.test(t.input || ''), failed: t => t.failed, final: t => !!t.isFinal};
+const visible = () => D.turns.filter(FILTERS[filt]).filter(t => !query || [t.reason, t.finalText, t.input, t.result].join('\n').toLowerCase().includes(query));
+
+function drawBar() {
+  const bar = document.getElementById('bar');
+  bar.innerHTML = Object.keys(FILTERS).map(k => `<button data-k="${k}" aria-pressed="${k === filt}">${k} (${D.turns.filter(FILTERS[k]).length})</button>`).join('') +
+    `<input id="q" type="search" placeholder="Search reasoning, code and results" aria-label="Search this trace" value="${esc(query)}">`;
+  for (const b of bar.querySelectorAll('button')) b.onclick = () => { filt = b.dataset.k; drawBar(); drawList(); };
+  const q = document.getElementById('q'); q.oninput = () => { query = q.value.toLowerCase(); drawList(); };
+}
+function drawList() {
+  const vis = visible(), el = document.getElementById('list');
+  el.innerHTML = vis.map(t => `<button class="row" data-t="${t.turn}" aria-current="${t === sel}">
+    <div class="top"><span>${t.kind === 'prompt' ? 'start' : '#' + t.turn}</span><span class="tag ${t.kind}">${t.kind}</span><span>${t.minutes ?? ''} min</span><span>fwd ${t.used_f ?? '–'}</span>${t.failed ? '<span class="fail">failed</span>' : ''}</div>
+    <div class="lab">${esc(t.label)}</div></button>`).join('') || '<div class="empty">No turns match.</div>';
+  for (const r of el.querySelectorAll('.row')) r.onclick = () => show(+r.dataset.t);
+  if (!sel || !vis.includes(sel)) show(vis.length ? vis[0].turn : null);
+}
+function show(turn) {
+  sel = D.turns.find(t => t.turn === turn) || null;
+  for (const r of document.querySelectorAll('.row')) r.setAttribute('aria-current', +r.dataset.t === turn);
+  const d = document.getElementById('detail');
+  if (!sel) { d.innerHTML = '<div class="empty">Nothing selected.</div>'; return; }
+  const t = sel;
+  let h = `<div class="meta">turn ${t.turn} · ${t.minutes ?? '–'} min in · context ${t.prompt_tokens ?? '–'} tokens · wrote ${t.completion_tokens ?? '–'} tokens · budget used after this turn: ${t.used_f ?? '–'} forward, ${t.used_py ?? '–'} python</div>`;
+  if (t.kind === 'prompt') { d.innerHTML = `<div class="meta">The first message of the search. Everything after it is the editor's own work.</div><h2>Prompt</h2><div class="prose">${esc(t.promptText)}</div>`; d.scrollTop = 0; return; }
+  if (t.reason) h += `<h2>Editor's reasoning</h2><div class="prose">${esc(t.reason)}</div>`;
+  if (t.finalText && !t.tool) h += `<h2>${t.isFinal ? 'Final reply' : 'Reply (no runnable tool call; the editor was asked to try again)'}</h2><div class="prose">${esc(t.finalText)}</div>`;
+  if (t.tool) {
+    const q = t.tool === 'forward' ? parse(t.input) : null;
+    h += `<h2>${t.tool === 'python' ? 'Python call' : 'Forward-pass request'}</h2><pre>${esc(q ? JSON.stringify(q, null, 1) : t.input)}</pre>`;
+    if (t.gen) { const r = t.gen, p = r.paired_edited_minus_original;
+      h += `<h2>${p ? 'Original against edited, same problems' : 'Generation result'}</h2><div class="tw"><table><tr><th></th><th>answers</th><th>correct</th><th>hit token cap</th><th>no boxed answer</th><th>mean tokens</th></tr>` +
+        ['original', 'edited'].map(k => r[k] ? `<tr><th>${k}</th><td>${r[k].n}</td><td>${r[k].accuracy_pct}%</td><td>${r[k].cut_at_max_tokens_pct}%</td><td>${r[k].no_boxed_answer_pct}%</td><td>${r[k].mean_tokens}</td></tr>` : '').join('') + `</table></div>`;
+      if (p) h += `<div class="meta" style="margin-top:6px">edited minus original: ${signed(p.diff_pp)} points, standard error ${p.se_pp}; ${p.wrong_to_right} answers went wrong → right, ${p.right_to_wrong} right → wrong</div>`; }
+    h += `<h2>Result returned to the editor</h2><pre class="${t.failed ? 'fail' : ''}">${esc(t.result)}</pre>`;
+  }
+  d.innerHTML = h; d.scrollTop = 0;
+}
+async function openRun(key) {
+  const m = INDEX.find(x => x.key === key) || INDEX[0]; cur = m.key;
+  runSel.value = cur;
+  document.getElementById('runres').innerHTML = resultLine(m) + ` <span class="sub">· ${m.turns} turns · ${m.forward}/${m.budget} forward · ${m.python} python · ${m.minutes} min</span>`;
+  let note = m.note;
+  if (m.heldout && m.heldout.edited != null) note += ` Held-out test: ${m.heldout.paired.wrong_to_right} answers went wrong → right and ${m.heldout.paired.right_to_wrong} right → wrong (standard error ${m.heldout.paired.se_pp} points).`;
+  document.getElementById('note').textContent = note;
+  if (!cache[cur]) {
+    document.getElementById('list').innerHTML = ''; document.getElementById('detail').innerHTML = '<div class="empty">Loading the trace…</div>';
+    try { const r = await fetch(`data/${cur}.json`); cache[cur] = await r.json(); const c = cache[cur]; if (c.turns.length) c.turns[c.turns.length - 1].last = c.meta.finished;
+      if (c.prompt) c.turns.unshift({turn: 0, kind: 'prompt', promptText: c.prompt}); c.turns.forEach(prep); }
+    catch (e) { document.getElementById('detail').innerHTML = '<div class="empty fail">This trace could not be loaded. Reload the page to try again.</div>'; return; }
+  }
+  if (cur !== m.key) return;
+  D = cache[cur]; sel = null; filt = 'all'; query = ''; drawBar(); drawList();
+}
+window.addEventListener('hashchange', () => openRun(location.hash.slice(1)));
+document.addEventListener('keydown', e => {
+  if (!D || e.target.id === 'q' || !['ArrowDown', 'ArrowUp', 'j', 'k'].includes(e.key)) return;
+  const vis = visible(), n = vis[vis.indexOf(sel) + (e.key === 'ArrowDown' || e.key === 'j' ? 1 : -1)];
+  if (n) { show(n.turn); const r = document.querySelector(`.row[data-t="${n.turn}"]`); if (r) r.scrollIntoView({block: 'nearest'}); e.preventDefault(); }
+});
+openRun(location.hash.slice(1));
+</script>

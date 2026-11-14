@@ -1,0 +1,41 @@
+{
+ "math500": {
+  "n": 150,
+  "skipped_or_error": 0,
+  "accuracy": 96.7,
+  "cap_hit_pct": 0.0,
+  "no_answer_pct": 0.0,
+  "mean_tokens": 1058
+ },
+ "medxpertqa": {
+  "n": 250,
+  "skipped_or_error": 0,
+  "accuracy": 59.2,
+  "cap_hit_pct": 6.8,
+  "no_answer_pct": 3.6,
+  "mean_tokens": 5770
+ },
+ "mmlu_pro": {
+  "n": 250,
+  "skipped_or_error": 0,
+  "accuracy": 86.0,
+  "cap_hit_pct": 5.2,
+  "no_answer_pct": 2.8,
+  "mean_tokens": 2965
+ },
+ "scibench": {
+  "n": 250,
+  "skipped_or_error": 0,
+  "accuracy": 79.6,
+  "cap_hit_pct": 8.0,
+  "no_answer_pct": 1.6,
+  "mean_tokens": 4083,
+  "bare_number_pct": 89.6
+ },
+ "_run": {
+  "model": "thinkingmachines/Inkling-2-Small:peft:262144",
+  "cap": 16384,
+  "reasoning_effort": "high",
+  "usd": 3.42
+ }
+}

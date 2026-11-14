@@ -1,0 +1,43 @@
+{
+ "run_id": "control-paper-edit",
+ "n_per_problem": 2,
+ "problems": 500,
+ "cap": 8192,
+ "edited_tensors": [
+  "model.language_model.layers.23.mlp.down_proj.weight"
+ ],
+ "original": {
+  "n": 1000,
+  "accuracy_pct": 7.1,
+  "correct": 71,
+  "graded": 1000,
+  "mean_tokens": 7976,
+  "cut_at_max_tokens_pct": 94.8,
+  "no_boxed_answer_pct": 80.7,
+  "by_source": {
+   "math500": "71/1000"
+  }
+ },
+ "changed_bf16_entries": {
+  "model.language_model.layers.23.mlp.down_proj.weight": 1023
+ },
+ "edited": {
+  "n": 1000,
+  "accuracy_pct": 28.9,
+  "correct": 289,
+  "graded": 1000,
+  "mean_tokens": 7320,
+  "cut_at_max_tokens_pct": 72.6,
+  "no_boxed_answer_pct": 56.3,
+  "by_source": {
+   "math500": "289/1000"
+  }
+ },
+ "paired_edited_minus_original": {
+  "diff_pp": 21.8,
+  "se_pp": 1.57,
+  "questions": 500,
+  "wrong_to_right": 229,
+  "right_to_wrong": 11
+ }
+}

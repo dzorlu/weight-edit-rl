@@ -1,0 +1,59 @@
+{
+ "run_id": "opus55-qwen08-math-1-s1",
+ "n_per_problem": 2,
+ "problems": 500,
+ "cap": 8192,
+ "edited_tensors": [
+  "model.language_model.layers.15.mlp.down_proj.weight",
+  "model.language_model.layers.16.mlp.down_proj.weight",
+  "model.language_model.layers.17.linear_attn.out_proj.weight",
+  "model.language_model.layers.18.linear_attn.out_proj.weight",
+  "model.language_model.layers.19.mlp.down_proj.weight",
+  "model.language_model.layers.19.self_attn.o_proj.weight",
+  "model.language_model.layers.20.linear_attn.out_proj.weight",
+  "model.language_model.layers.21.linear_attn.out_proj.weight",
+  "model.language_model.layers.22.mlp.down_proj.weight"
+ ],
+ "original": {
+  "n": 1000,
+  "accuracy_pct": 7.6,
+  "correct": 76,
+  "graded": 1000,
+  "mean_tokens": 7894,
+  "cut_at_max_tokens_pct": 93.6,
+  "no_boxed_answer_pct": 80.9,
+  "by_source": {
+   "math500": "76/1000"
+  }
+ },
+ "changed_bf16_entries": {
+  "model.language_model.layers.15.mlp.down_proj.weight": 3351046,
+  "model.language_model.layers.16.mlp.down_proj.weight": 3337352,
+  "model.language_model.layers.17.linear_attn.out_proj.weight": 1904160,
+  "model.language_model.layers.18.linear_attn.out_proj.weight": 1913112,
+  "model.language_model.layers.19.mlp.down_proj.weight": 3345476,
+  "model.language_model.layers.19.self_attn.o_proj.weight": 1903712,
+  "model.language_model.layers.20.linear_attn.out_proj.weight": 1914176,
+  "model.language_model.layers.21.linear_attn.out_proj.weight": 1906586,
+  "model.language_model.layers.22.mlp.down_proj.weight": 3342581
+ },
+ "edited": {
+  "n": 1000,
+  "accuracy_pct": 34.8,
+  "correct": 348,
+  "graded": 1000,
+  "mean_tokens": 6323,
+  "cut_at_max_tokens_pct": 62.4,
+  "no_boxed_answer_pct": 59.4,
+  "by_source": {
+   "math500": "348/1000"
+  }
+ },
+ "paired_edited_minus_original": {
+  "diff_pp": 27.2,
+  "se_pp": 1.71,
+  "questions": 500,
+  "wrong_to_right": 274,
+  "right_to_wrong": 2
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "run_id": "inkling2s-qwen08-math-methods-1",
+ "n_per_problem": 2,
+ "problems": 500,
+ "cap": 8192,
+ "edited_tensors": [
+  "model.language_model.layers.20.mlp.down_proj.weight",
+  "model.language_model.layers.21.mlp.down_proj.weight",
+  "model.language_model.layers.22.mlp.down_proj.weight",
+  "model.language_model.layers.23.mlp.down_proj.weight"
+ ],
+ "original": {
+  "n": 1000,
+  "accuracy_pct": 6.6,
+  "correct": 66,
+  "graded": 1000,
+  "mean_tokens": 7962,
+  "cut_at_max_tokens_pct": 95.2,
+  "no_boxed_answer_pct": 81.0,
+  "by_source": {
+   "math500": "66/1000"
+  }
+ },
+ "changed_bf16_entries": {
+  "model.language_model.layers.20.mlp.down_proj.weight": 2973133,
+  "model.language_model.layers.21.mlp.down_proj.weight": 2974420,
+  "model.language_model.layers.22.mlp.down_proj.weight": 2977593,
+  "model.language_model.layers.23.mlp.down_proj.weight": 2980641
+ },
+ "edited": {
+  "n": 1000,
+  "accuracy_pct": 20.2,
+  "correct": 202,
+  "graded": 1000,
+  "mean_tokens": 7054,
+  "cut_at_max_tokens_pct": 78.1,
+  "no_boxed_answer_pct": 76.1,
+  "by_source": {
+   "math500": "202/1000"
+  }
+ },
+ "paired_edited_minus_original": {
+  "diff_pp": 13.6,
+  "se_pp": 1.31,
+  "questions": 500,
+  "wrong_to_right": 145,
+  "right_to_wrong": 9
+ }
+}

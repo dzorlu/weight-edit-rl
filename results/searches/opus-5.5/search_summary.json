@@ -1,0 +1,13 @@
+{
+ "run_id": "opus55-qwen08-math-1-s1",
+ "editor": "claude-opus-5-5",
+ "effort": "xhigh",
+ "ended": "driver preempted at turn 135 while writing final notes; edit taken from /work/edited as saved at that moment",
+ "turns": 135,
+ "forward_used": 18,
+ "python_used": 113,
+ "restarts": 0,
+ "seconds": 10206,
+ "api_usd": 7.49,
+ "final_text": "I've got a third confirmation at +28.1 \u00b1 3.4, so across 768 paired held-out generations the gain is consistently in the +26-29pp range. I'm weighing whether to keep improving with the remaining time and passes, and whether the gain should also extend to the full-attention layer 23, though I'm leaning against that.\n\nI'm checking whether the evaluation differs from practice, and the MATH-500 test problems look similar in distribution, with the edit raising accuracy at every level. The instructions say to keep an edit only if its gain clearly exceeds its standard error on problems not used to choose it, and that condition is met. I'm finalizing now and updating the notes with the final state.\n\n"
+}

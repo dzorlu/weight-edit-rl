@@ -1,0 +1,14 @@
+{
+ "run_id": "inkling2s-qwen08-math-methods-1",
+ "editor": "thinkingmachines/Inkling-2-Small:peft:262144",
+ "effort": "xhigh",
+ "ended": "editor finished",
+ "turns": 163,
+ "forward_used": 25,
+ "python_used": 127,
+ "restarts": 0,
+ "seconds": 5817,
+ "methods_in_prompt": true,
+ "api_usd": 2.31,
+ "final_text": "FINAL SUBMISSION\n\nWhat I changed: a rank-one gain on the MLP down_proj of the four late layers (20, 21, 22, 23):\nW' = W + 0.85 * outer(d, d @ W), with d = r(</think>)/||r(</think>)||, where r(T) = E[T] * (1 + gamma) and gamma is the final-norm weight (Qwen3_5RMSNorm uses output = x_norm * (1+weight), verified against modeling_qwen3_5.py). No other tensors are touched.\n\nWhy: on practice problems the model overwhelmingly fails not by reasoning wrongly but by never stopping: ~94-100% of generations hit the 8192-token limit in an endless \"Wait, ...\" self-correction loop, never closing </think> and never emitting \\boxed{}. Teacher-forced analysis of failing prefixes showed that intermediate/late MLP layers (notably 19-22) produce negative alignment with the </think> readout direction, while layer 23 strongly writes both \"Wait\" and </think>. The rank-one gain amplifies exactly what the network already computes toward closing its thinking, in proportion to how strongly it is already leaning that way.\n\nEvidence:\n- Dose-response (64 paired gens on a held-out-for-choice split): alpha 0.5 -> +4.5pp, 0.7 -> +8.9pp, 0.85 -> +21.4pp, 1.0 -> +30.4pp. alpha = 1.0 caused immediate </think> skipping in ~30% of cases, so 0.85 was chosen (immediate-close ~6%).\n- Two untouched confirmation sets, 256 paired generations each, same seeds both models: conf1 edited 35.6% vs original 12.9% (+22.66pp, SE 2.93); conf2 edited 28.5% vs original 8.2% (+20.31pp, SE 3.11). Combined 512 unseen generations, ~+21.5pp, far above 2 SE. Wrong-to-right dominates (119 vs 7 right-to-wrong).\n- Behaviour: mean length drops from ~7.9k to ~6.0-6.7k tokens; the model still produces full thinking on most problems rather than skipping it.\n\nI did not use the diagnosis/choice sets for confirmation, and the two confirmation sets were never used for any choice. The submitted tensors in /work/edited are verified to be exactly the 0.85 gains recomputed from the originals; a copy is in /work/best_4L_085/."
+}
