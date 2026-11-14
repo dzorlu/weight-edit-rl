@@ -672,6 +672,31 @@ class Target:
         return out
 
     @modal.method()
+    def put_files(self, root: str, files_json: str):
+        """Write text files under `root` (used to give a rollout the shared library)."""
+        import json, os
+        files = json.loads(files_json)
+        for name, text in files.items():
+            path = os.path.join(root, os.path.basename(name))
+            os.makedirs(root, exist_ok=True)
+            open(path, "w").write(text)
+        return len(files)
+
+    @modal.method()
+    def get_files(self, root: str, max_bytes: int = 400000):
+        """Text files under `root` (flat), newest first, up to `max_bytes` in total."""
+        import os
+        out, total = {}, 0
+        if os.path.isdir(root):
+            names = sorted((n for n in os.listdir(root) if n.endswith((".md", ".txt"))), key=lambda n: -os.path.getmtime(os.path.join(root, n)))
+            for n in names:
+                t = open(os.path.join(root, n), errors="replace").read()[:120000]
+                if total + len(t) > max_bytes:
+                    continue
+                out[n] = t; total += len(t)
+        return out
+
+    @modal.method()
     def snapshot(self, run_id: str):
         """Copy /work (without large activation arrays) to the runs volume."""
         import os, shutil

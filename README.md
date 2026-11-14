@@ -53,7 +53,8 @@ The RL loop has run one full step on a small test (4 rollouts, 8 forward passes 
 - **Rollout.** One editing search on a fresh copy of the target. The editor calls two tools until it submits an edit or keeps the original weights.
 - **`python` tool.** A CPU sandbox with the target's weights on disk: load a tensor, analyse it, save an edited tensor. No internet, no gradients.
 - **`forward` tool.** Runs the target on a GPU. Either it answers practice problems (original weights, edited weights, or both side by side), or it reads supplied text and returns log-probabilities and activations. The number of calls is limited.
-- **Reward.** Accuracy with the submitted edit minus accuracy with the original weights, on problems the editor never sees.
+- **Reward.** Accuracy with the submitted edit minus accuracy with the original weights, on problems the editor never sees. The editor always submits its best edit, so a harmful edit scores below zero.
+- **Web and library (optional).** `web_search` and `web_read` let the editor look up methods and read papers. What it saves in `/library` is kept for later rollouts. Pages that publish an edit for this exact model are filtered out.
 - **RL step.** A group of rollouts from the current checkpoint, one policy-gradient update on Tinker, a new checkpoint.
 
 ## Run it
@@ -68,8 +69,11 @@ uvx modal run -m rl.loop::prep_reward_set
 # one search with Inkling 2 Small as the editor, then the held-out test
 uvx modal run --detach -m editors.tinker_openai::oai --run-id inkling-1
 
-# the RL loop: 8 steps of 8 rollouts, 32 forward passes per rollout
-uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32
+# once: the original weights' answers that every rollout starts from
+uvx modal run -m rl.loop::prep_baseline
+
+# the RL loop: 8 steps of 8 rollouts, 32 forward passes per rollout; --web adds web search and a shared paper library
+uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32 --web
 ./rl/watch.sh run1 <modal-app-id>
 ```
 
@@ -93,6 +97,7 @@ scripts/
   tinker_check.py            check the Tinker calls the RL loop depends on
 viewer/
   build.py, template.html    a page for stepping through any trajectory
+  edit_figures.py            draws the before/after matrix figures for each kind of edit
 results/
   searches/        per search: transcript, summary, held-out result
   rl/              per RL run: steps and rollouts

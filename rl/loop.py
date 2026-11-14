@@ -4,6 +4,7 @@ One RL step: sample a group of rollouts with the current checkpoint, score each 
 take one policy-gradient step on Tinker, save a checkpoint.
 
     uvx modal run -m rl.loop::prep_reward_set          # once
+    uvx modal run -m rl.loop::prep_baseline            # once: the original weights' answers every rollout starts from
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32
 
 Cost bounds: each rollout holds one L40S for at most `rollout_minutes`; the whole run stops at `hours`.
@@ -40,13 +41,38 @@ TOOLS = [
 RETURN_KEYS = ("token_logprobs", "topk", "hidden_states", "mlp_act")
 WEB_TOOL = {"name": "web_search", "description": "Search the web (Exa). Returns titles, links and short excerpts. Use it for methods and background, for example interpretability techniques.",
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}
+WEB_READ_TOOL = {"name": "web_read", "description": "Fetch one web page or paper as text. The full text is saved to /library/<name>.md and the first part is returned.",
+                 "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}
 WEB_BUDGET = 20
+LIBRARY = "/library"
 # Pages that publish ready-made edits for this very model would let the editor copy an answer; they are kept out.
 WEB_EXCLUDE = ["raw.githubusercontent.com/RikiyaT", "rikiyat.github.io", "github.com/RikiyaT", "huggingface.co/RikiyaT", "github.com/WSP-Scope", "arxiv.org/abs/2611.09382", "arxiv.org/pdf/2611.09382", "arxiv.org/html/2611.09382"]
 WEB_BLOCK = ("weight-space programming", "weight space programming", "weight-space-programming", "2611.09382", "qwen3", "qwen35", "qwen 3", "qwen-3", "gpt-6 astra", "astra", "rikiyat", "lm_understand", "wsp-scope", "math weight editing")
 WEB_TEXT = """
 
-WEB SEARCH. You also have a `web_search` tool with the parameter `query` (at most 20 searches). It returns titles, links and short excerpts. It is for methods and background, such as how an interpretability technique is computed. Results about this specific model or about published edits to it are filtered out. The python kernel itself still has no internet access."""
+WEB AND LIBRARY. You have two more tools: `web_search` (parameter `query`) returns titles, links and short excerpts, and `web_read` (parameter `url`) fetches a page or paper, saves its text to /library/<name>.md and returns the first part. Together at most 20 calls. Use them to look up methods you want to apply, for example how an interpretability or model-editing technique is computed, and read the paper before relying on it. Results about this specific model or about published edits to it are filtered out. The python kernel itself has no internet access.
+/library is shared: it already holds what earlier sessions saved, and what you add is kept for later sessions. Read /library/INDEX.md first. When you learn something reusable from a paper, write a short note file in /library (title, link, the method in a few lines, how you applied it and whether it worked here) and add one line for it to /library/INDEX.md. Keep the folder tidy: one file per paper or method, no scratch files, no duplicates. Files you only need for this session belong in /work."""
+
+KNOWN_TEXT = """
+
+WHAT IS ALREADY KNOWN ABOUT THIS MODEL. You do not need to spend a forward pass on a first diagnosis. /practice/baseline/original.jsonl holds the original weights' answers to {n} generations on practice problems (same format as the gen files: qid, sample, source, prompt, gold, text, extracted, correct, tokens, finish), and /practice/baseline/SUMMARY.txt has the counts:
+{summary}
+Do not use these baseline problems to confirm an edit.
+
+SANDBOX NOTES.
+- Practice ids look like "math/geometry/461" and "gsm8k/2754". Take them from /practice/problems.jsonl; do not guess them.
+- Tensor names: model.language_model.layers.<L>.mlp.{{gate_proj,up_proj,down_proj}}.weight for L = 0..23. Layers 3, 7, 11, 15, 19, 23 have full attention (…layers.<L>.self_attn.{{q_proj,k_proj,v_proj,o_proj}}.weight); the other layers have linear attention (…layers.<L>.linear_attn.…, see NAMES).
+- load(name) returns a float32 torch tensor. save_edit(name, tensor) takes a torch tensor of the same shape; convert numpy arrays with torch.from_numpy(a).float().
+- tok is a tokenizers.Tokenizer: tok.encode(text).ids, tok.decode(ids), tok.token_to_id(s).
+- A generation with "model": "both" takes at most 256 answers per model; with one model at most 512.
+- Tool output is shown up to about 6,000 characters. Print summaries, and keep long results in files."""
+
+FREE_REIN_OLD = "C. Write the edit. These forms all change a matrix that writes into the residual stream (MLP down_proj, attention output projection)."
+FREE_REIN_NEW = ("C. Write the edit. The forms below are starting points that have worked on models like this one. You are not limited to them: any tensor inside the transformer blocks is in scope "
+                 "(MLP gate_proj and up_proj, attention query, key, value and output projections, several layers at once, combinations, or a method of your own or from a paper you read), "
+                 "as long as you test it. The listed forms change a matrix that writes into the residual stream (MLP down_proj, attention output projection).")
+DIAG_OLD_START, DIAG_OLD_END = "1. Open with one large generation on the original weights", "2. Before any analysis"
+DIAG_NEW = "1. Start from the baseline answers in /practice/baseline (see WHAT IS ALREADY KNOWN): count how many are cut at the token limit, and find which words or phrases are far more frequent in the failed texts than in the completed ones.\n"
 
 
 def exa_search(query, key):
@@ -63,6 +89,25 @@ def exa_search(query, key):
             continue
         out.append(f"- {x.get('title')}\n  {x.get('url')}\n  {hl}")
     return ("\n".join(out[:5]) or "[no results]") + (f"\n[{dropped} results were filtered out]" if dropped else "")
+
+
+def exa_read(url, key):
+    """(title, text) of a page through Exa's contents endpoint; refuses pages the search filter would drop."""
+    import json, urllib.request
+    low = str(url).lower()
+    if any(b in low for b in WEB_BLOCK) or any(x.lower() in low for x in WEB_EXCLUDE):
+        return None, "[this page is filtered out]"
+    body = {"urls": [str(url)[:2000]], "text": {"maxCharacters": 120000}}
+    req = urllib.request.Request("https://api.exa.ai/contents", json.dumps(body).encode(), {"x-api-key": key, "Content-Type": "application/json", "User-Agent": "research-harness"})
+    r = json.loads(urllib.request.urlopen(req, timeout=90).read())
+    res = r.get("results") or []
+    if not res or not (res[0].get("text") or "").strip():
+        return None, "[the page could not be read]"
+    title, text = res[0].get("title") or "", res[0]["text"]
+    head = (title + " " + text[:3000]).lower()
+    if any(b in head for b in WEB_BLOCK):
+        return None, "[this page is filtered out]"
+    return title, text
 
 
 def forward_request(args):
@@ -110,7 +155,7 @@ SUBMIT_RULE_OLD = 'Submit an edit only if a paired comparison on at least 300 ge
 SUBMIT_RULE_RL = 'Always finish with your best edit saved in /work/edited. Your score is the accuracy of that edit minus the accuracy of the original weights on unseen problems, so a harmful edit scores below zero and the original weights score zero. Do not drop a promising edit because you ran out of budget to confirm it: submit the candidate your evidence supports best, and say how strong that evidence is.'
 
 
-def editor_prompt(forward_budget, web=False):
+def editor_prompt(forward_budget, web=False, known=None):
     a, b = PROMPT.index("WHAT COUNTS."), PROMPT.index("WHAT YOU HAVE.")
     body = PROMPT[:a] + GUIDE + "\n\n" + PROMPT[b:]
     for old in ("a budget of 50 forward passes in total", "When all 50 forward passes are used"):
@@ -125,10 +170,17 @@ def editor_prompt(forward_budget, web=False):
         body = body.replace(old, new)
     assert SUBMIT_RULE_OLD in body
     body = body.replace(SUBMIT_RULE_OLD, SUBMIT_RULE_RL)
+    assert FREE_REIN_OLD in body
+    body = body.replace(FREE_REIN_OLD, FREE_REIN_NEW)
+    extra = ""
+    if known:
+        a, b = body.index(DIAG_OLD_START), body.index(DIAG_OLD_END)
+        body = body[:a] + DIAG_NEW + body[b:]
+        extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"])
     if web:
-        b = body.index("HOW TO WORK.")
-        body = body[:b].rstrip() + WEB_TEXT + "\n\n" + body[b:]
-    return body
+        extra += WEB_TEXT
+    b = body.index("HOW TO WORK.")
+    return body[:b].rstrip() + extra + "\n\n" + body[b:]
 
 
 @app.function(image=base_src, volumes={"/runs": runs, "/heldout": heldout_vol}, timeout=1800, cpu=4, memory=8192, retries=0)
@@ -154,11 +206,58 @@ def prep_reward_set(n: int = 256):
     print("reward set:", min(n, len(rows)), "of", len(rows), "unused MATH training problems")
 
 
+BASELINE_CODE = r"""
+import json, os, collections, shutil
+rows = [json.loads(l) for l in open('/work/gen_1.jsonl')]
+os.makedirs('/practice/baseline', exist_ok=True)
+shutil.copy('/work/gen_1.jsonl', '/practice/baseline/original.jsonl')
+pct = lambda xs: round(100 * sum(xs) / max(1, len(xs)), 1)
+cut = [r for r in rows if r['finish'] == 'length']; done = [r for r in rows if r['finish'] != 'length']
+def opens(rs):
+    c, toks = collections.Counter(), 0
+    for r in rs:
+        toks += r['tokens']
+        for line in r['text'].split('\n'):
+            w = line.strip().split(' ')[0].strip('*,.:')[:16]
+            if w.isalpha(): c[w] += 1
+    return c, max(1, toks)
+cc, ct = opens(cut); dc, dt = opens(done)
+rate = lambda c, t, w: 1000 * c[w] / t
+top = sorted((w for w in cc if cc[w] >= 40), key=lambda w: -(rate(cc, ct, w) + 0.01) / (rate(dc, dt, w) + 0.01))[:8]
+lines = [
+ f"- {len(rows)} answers to {len({r['qid'] for r in rows})} practice problems: {pct([r['correct'] for r in rows])}% correct "
+ f"({pct([r['correct'] for r in rows if r['source'] == 'math_train'])}% on MATH, {pct([r['correct'] for r in rows if r['source'] == 'gsm8k_train'])}% on GSM8K).",
+ f"- {pct([r['finish'] == 'length' for r in rows])}% run to the 8,192-token limit and {pct([r['extracted'] is None for r in rows])}% have no boxed answer. Of the answers that finish, {pct([r['correct'] for r in done])}% are correct.",
+ "- Words that open a line far more often in the cut-off answers than in the finished ones (per 1,000 tokens, cut-off vs finished): "
+ + ", ".join(f"{w} {rate(cc, ct, w):.1f} vs {rate(dc, dt, w):.1f}" for w in top) + ".",
+]
+open('/practice/baseline/SUMMARY.txt', 'w').write("\n".join(lines) + "\n")
+json.dump({"n": len(rows), "summary": "\n".join(lines)}, open('/practice/baseline/meta.json', 'w'))
+print("\n".join(lines))
+"""
+
+
+@app.function(image=rl_image, volumes={"/runs": runs}, timeout=3600)
+async def prep_baseline(n_math: int = 192, n_gsm: int = 64):
+    """Once per target: the original weights' answers on practice problems, so rollouts need not regenerate them."""
+    import json
+    tgt = Target.with_options(scaledown_window=60)(rid="baseline")
+    out = await tgt.py.remote.aio(
+        "import json, random\nrows = [json.loads(l) for l in open('/practice/problems.jsonl')]\n"
+        "m = [r['id'] for r in rows if r['source'] == 'math_train']; g = [r['id'] for r in rows if r['source'] == 'gsm8k_train']\n"
+        f"random.Random(7).shuffle(m); random.Random(7).shuffle(g)\nprint(json.dumps(m[:{n_math}] + g[:{n_gsm}]))")
+    ids = json.loads(out.strip().split("\n")[-1])
+    ok, res = await tgt.forward.remote.aio(json.dumps({"type": "generate", "model": "original", "problems": ids, "n": 2, "max_tokens": GEN_CAP}))
+    assert ok, res
+    print(await tgt.py.remote.aio(BASELINE_CODE))
+    await tgt.snapshot.remote.aio("rl/_baseline_work")  # commits the runs volume, where /practice lives
+
+
 @app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol}, secrets=[modal.Secret.from_name("tinker"), modal.Secret.from_name("exa")],
               timeout=int(11.5 * 3600), nonpreemptible=True, cpu=4, memory=16384)
 async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
-                 reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False):
-    import asyncio, json, os, time
+                 reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = ""):
+    import asyncio, re, json, os, time
     import tinker, torch
     from tinker_cookbook import model_info
     from tinker_cookbook.renderers import get_renderer, get_text_content, ToolCall
@@ -184,10 +283,31 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         tc = await asyncio.to_thread(lambda: svc.create_lora_training_client(base_model=MODEL, rank=32).result())
     items = [json.loads(l) for l in open("/heldout/rl/reward_math.jsonl")][:reward_items]
     items_json = json.dumps(items)
-    prompt_text = editor_prompt(forward_budget, web)
-    tools = TOOLS + ([WEB_TOOL] if web else [])
+    bm = "/runs/data/math_practice/baseline/meta.json"
+    known = json.load(open(bm)) if os.path.exists(bm) else None
+    prompt_text = editor_prompt(forward_budget, web, known)
+    tools = TOOLS + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
+    lib_dir = f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
+    os.makedirs(lib_dir, exist_ok=True)
+    if not os.path.exists(f"{lib_dir}/INDEX.md"):
+        open(f"{lib_dir}/INDEX.md", "w").write("# Library index\n\nOne line per file: file name, what it is, whether it helped.\n")
+
+    def lib_files():
+        return {n: open(os.path.join(lib_dir, n), errors="replace").read() for n in sorted(os.listdir(lib_dir)) if n.endswith((".md", ".txt"))}
+
+    def lib_merge(files):
+        """Fold what a rollout left in /library back into the shared copy: new files are added, the index gains new lines."""
+        for n, text in (files or {}).items():
+            n = os.path.basename(n); path = os.path.join(lib_dir, n)
+            if n == "INDEX.md":
+                have = open(path).read().splitlines()
+                add = [l for l in text.splitlines() if l.strip() and l not in have]
+                if add:
+                    open(path, "a").write("\n".join(add) + "\n")
+            elif not os.path.exists(path) or len(text) > os.path.getsize(path):
+                open(path, "w").write(text)
     json.dump({"exp": exp, "model": MODEL, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
-               "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "web": web, "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
+               "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "web": web, "library": lib_dir, "baseline_given": bool(known), "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
 
     def slog(rec):
         with open(f"{d}/steps.jsonl", "a") as f:
@@ -211,9 +331,17 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         transitions, used_f, used_py, used_web, nags, turn, cutoffs = [], 0, 0, 0, 0, 0, 0
         tok = dict(prefill=0, cached=0, sampled=0)
         asked_final, ended, final_text = False, "turn limit", None
+        ctx = 0
+        if web:
+            await tgt.put_files.remote.aio(LIBRARY, json.dumps(lib_files()))
         log = open(f"{d}/{rid}.jsonl", "a")
         w = lambda rec: (log.write(json.dumps(rec) + "\n"), log.flush())
-        status = lambda: f"\n\n[forward passes used: {used_f}/{forward_budget}; python runs used: {used_py}/{PY_BUDGET}; about {max(0, int((deadline - time.time()) / 60))} minutes left]"
+        def status():
+            parts = [f"turn {turn}", f"forward passes left: {max(0, forward_budget - used_f)} of {forward_budget}", f"python runs left: {max(0, PY_BUDGET - used_py)}"]
+            if web:
+                parts.append(f"web calls left: {max(0, WEB_BUDGET - used_web)}")
+            parts += [f"minutes left: about {max(0, int((deadline - time.time()) / 60))}", f"context left: about {max(0, 235000 - ctx) // 1000}k tokens"]
+            return "\n\n[" + "; ".join(parts) + "]"
         must_finish = lambda: used_f >= forward_budget or time.time() > deadline
         try:
             while turn < max_turns:
@@ -228,6 +356,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 transitions.append(Transition(ob=ob, ac=TokensWithLogprobs(tokens=list(s.tokens), maybe_logprobs=list(s.logprobs)), reward=0.0, episode_done=False))
                 hit = int(getattr(resp, "prompt_cache_hit_tokens", 0) or 0)
                 tok["prefill"] += ob.length - hit; tok["cached"] += hit; tok["sampled"] += len(s.tokens)
+                ctx = ob.length + len(s.tokens)
                 text = get_text_content(msg) or ""
                 content = msg.get("content")
                 thinking = "\n\n".join(str(p.get("thinking") or p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "thinking") if isinstance(content, list) else ""
@@ -287,6 +416,22 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                             used_f += 1
                         else:
                             res = "[request failed; it does not count against the budget]\n" + res
+                elif kind == "web_read" and web:
+                    body = str(args.get("url", ""))
+                    if used_web >= WEB_BUDGET:
+                        res = "[no web calls left]"
+                    else:
+                        used_web += 1
+                        try:
+                            title, text = await asyncio.to_thread(exa_read, body, os.environ["EXA_API_KEY"])
+                            if title is None:
+                                res = text
+                            else:
+                                slug = re.sub(r"[^a-z0-9]+", "-", (title or body).lower()).strip("-")[:60] or "page"
+                                await tgt.put_files.remote.aio(LIBRARY, json.dumps({slug + ".md": f"# {title}\n\nSource: {body}\n\n{text}"}))
+                                res = f"[saved to /library/{slug}.md, {len(text)} characters]\n\n{title}\n\n{text[:4000]}"
+                        except Exception as e:
+                            res = "[the page could not be read: " + repr(e)[:200] + "]"
                 elif kind == "web_search" and web:
                     body = str(args.get("query", ""))
                     if used_web >= WEB_BUDGET:
@@ -300,6 +445,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 else:
                     body, res = tc.function.arguments[:2000], f"[unknown tool {kind!r}; the tools are python and forward]"
                 w({"turn": turn, "tool": kind, "input": body[:20000], "result": res[:20000], "used_f": used_f, "used_py": used_py})
+                if len(res) > 6000:
+                    res = res[:6000] + "\n[output cut at 6,000 characters]"
                 extra = ""
                 if must_finish() and not asked_final:
                     asked_final = True
@@ -318,6 +465,12 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 acc_e = sum(ok_e.values()) / len(ok_e)
                 reward = sum(float(ok_e[k]) - float(base_ok[k]) for k in ok_e) / len(ok_e)
                 cap_e = sum(r["finish"] == "length" for r in rw["edited"]) / len(rw["edited"])
+            lib_out = {}
+            if web:
+                try:
+                    lib_out = await tgt.get_files.remote.aio(LIBRARY)
+                except Exception as e:
+                    w({"library_error": repr(e)[:300]})
             try:
                 await tgt.snapshot.remote.aio(f"rl/{exp}/work/{rid}")
             except Exception as e:
@@ -325,11 +478,12 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             usd = (tok["prefill"] * PRICE["prefill"] + tok["cached"] * PRICE["cached"] + tok["sampled"] * PRICE["sample"]) / 1e6
             info = {"rid": rid, "ok": True, "reward": round(reward, 4), "edited_accuracy": acc_e, "edited_hit_cap": cap_e, "edited_tensors": rw["edited_tensors"], "ended": ended,
                     "turns": turn, "forward_used": used_f, "python_used": used_py, "web_used": used_web, "minutes": round((time.time() - t0) / 60, 1), "tokens": tok, "sampling_usd": round(usd, 3)}
+            info["library_files"] = sorted(lib_out)
             w({"summary": info, "final_text": final_text})
-            return Trajectory(transitions=transitions, final_ob=tinker.ModelInput.empty()), info
+            return Trajectory(transitions=transitions, final_ob=tinker.ModelInput.empty()), info, lib_out
         except Exception as e:
             w({"error": repr(e)[:1000]})
-            return None, {"rid": rid, "ok": False, "error": repr(e)[:400], "turns": turn, "minutes": round((time.time() - t0) / 60, 1)}
+            return None, {"rid": rid, "ok": False, "error": repr(e)[:400], "turns": turn, "minutes": round((time.time() - t0) / 60, 1)}, {}
         finally:
             log.close()
 
@@ -340,9 +494,11 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         t = time.time()
         sampler = await asyncio.to_thread(lambda: tc.save_weights_and_get_sampling_client().result())
         out = await asyncio.gather(*[rollout(sampler, f"{exp}-s{step}-r{i}") for i in range(group_size)])
-        good = [(tr, info) for tr, info in out if info["ok"]]
+        for _, _, lib_out in out:
+            lib_merge(lib_out)
+        good = [(tr, info) for tr, info, _ in out if info["ok"]]
         rewards = [info["reward"] for _, info in good]
-        rec = {"event": "step", "step": step, "rollouts": [info for _, info in out], "rewards": rewards,
+        rec = {"event": "step", "step": step, "rollouts": [info for _, info, _ in out], "rewards": rewards, "library": sorted(os.listdir(lib_dir)),
                "mean_reward": round(sum(rewards) / len(rewards), 4) if rewards else None, "rollout_minutes": round((time.time() - t) / 60, 1)}
         if len(set(rewards)) >= 2:
             mean = sum(rewards) / len(rewards)
@@ -371,6 +527,6 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 
 @app.local_entrypoint()
 def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
-       reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False):
-    call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web)
+       reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = ""):
+    call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library)
     print("SPAWNED", call.object_id)
