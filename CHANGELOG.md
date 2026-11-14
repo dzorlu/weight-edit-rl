@@ -1,0 +1,69 @@
+# Changelog
+
+Changes to the prompt, the tools and the RL setup, newest first, with the reason for each.
+
+## 14 November 2026
+
+**Original answers are cached.**
+The original weights' answers on the `select`, `confirm_1` and `confirm_2` splits are generated once and stored in `/practice/original/`. The forward tool serves them from the cache, so a paired test only generates the edited side. Only the text and its grading are cached, not activations.
+Why: every rollout regenerated the same original answers, and generation is nearly all of a rollout's GPU time.
+
+**Practice index and ready-made splits.**
+`/practice/index.tsv` lists every problem. `/practice/splits.json` has disjoint lists: `baseline`, `select`, `confirm_1`, `confirm_2`, `extra`.
+Why: 14 forward calls in 8 rollouts failed on made-up problem ids, and every rollout built its own splits.
+
+**The first diagnosis is given.**
+`/practice/baseline/` holds the original weights' answers to 512 generations and a summary. The prompt tells the editor to start from it.
+Why: 5 of 8 rollouts spent their first forward pass and about 13 minutes on the same diagnosis.
+
+**Always submit the best edit.**
+The RL prompt asks for the best edit to be left in place every time. A harmful edit scores below zero.
+Why: one rollout dropped an edit worth +25 points on practice because it had no budget for a 300-answer confirmation, and scored the same 0 as a rollout that found nothing. The strict rule stays for standalone searches.
+
+**Free rein on the kind of edit.**
+The listed edit forms are now starting points. Any tensor inside the transformer blocks may be edited.
+Why: every edit so far was on an MLP or attention output matrix.
+
+**Web search, page reading and a shared library** (`--web`).
+`web_search` and `web_read` call Exa. `web_read` saves the page to `/library`, which is pushed into each rollout and merged back, so notes persist across rollouts and steps. Pages that publish an edit for this exact model are filtered out.
+Why: let the editor look up and read methods. Without the filter the published fix for this model can be found with one query.
+
+**Countdown line.**
+After every tool result the editor sees the turn number and what is left: forward passes, Python runs, web calls, minutes and context.
+Why: time and context ran out before the forward-pass budget did.
+
+**Sandbox notes in the prompt.**
+Tensor name patterns, tokenizer and `save_edit` usage, and the limits of one generation call.
+Why: about 10 Python errors in 8 rollouts came from guessing these.
+
+**Tool output is cut at 6,000 characters** in the editor's context.
+Why: context reached 80,000 to 144,000 tokens after only 8 forward passes, and the limit is 256,000.
+
+**Checkpoints expire.**
+Sampling checkpoints after 7 days, resumable ones after 2.
+Why: one Inkling checkpoint is 17 GB and a resumable one 50 GB. The first RL run stopped when Tinker's free 100 GB filled up.
+
+**Flat arguments for the forward tool, and a repair step.**
+`forward` takes `type`, `model`, `texts` and so on directly. A tool call that cannot be parsed is completed and rerun.
+Why: with the request nested three objects deep, Inkling dropped a closing brace in 3 of 5 test calls, and rollouts spiralled. With flat arguments 10 of 10 parsed.
+
+**Inkling's own tool-call format.**
+The RL loop declares the tools to the renderer and reads native tool calls.
+Why: with a text protocol and direct sampling, Inkling sometimes switched to its native format and did not end its turn.
+
+**Each rollout gets its own target container, and the reward is scored there** after the editor has finished.
+
+**RL loop added** (`rl/loop.py`): rollouts sampled from the current Tinker checkpoint, reward, one policy-gradient step, new checkpoint.
+
+## 13 November 2026
+
+**Consolidated guide in the prompt.** One section replaces "what counts" and the methods list, with each method named after its source.
+
+**The editor may finish early** with a reply starting `FINAL SUBMISSION`.
+Why: with no way to stop, an editor burned forward passes on one-answer requests to run the budget down.
+
+**Search drivers run on non-preemptible capacity and refuse to restart** over an existing run.
+Why: a preempted driver restarted a search from turn 1 on top of the first session's files.
+
+**The held-out test is spawned, not called.**
+Why: a blocking call was cancelled when the local command ended.

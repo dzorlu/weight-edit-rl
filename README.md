@@ -113,6 +113,8 @@ To read a trajectory turn by turn:
 python3 viewer/build.py && python3 -m http.server -d viewer/site
 ```
 
+Changes to the prompt, tools and setup, with the reason for each, are in [CHANGELOG.md](CHANGELOG.md).
+
 ## Differences from arXiv 2611.09382
 
 Answers are capped at 8,192 tokens instead of 32,768. The held-out test uses 2 samples per problem instead of 4. The grader, the practice set and the prompt wording are our own.
