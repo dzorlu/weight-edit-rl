@@ -4,6 +4,10 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**Trainer-versus-sampler metrics, and the hero run restarted as `hero3`** (14:00).
+Each RL step now records, on the action tokens it trains on: the KL between the sampler's and the trainer's log-probabilities (first- and second-order estimates, as in the Tinker cookbook), the largest per-token difference, the share of tokens differing by more than 0.2, and the entropy of the sampled tokens. The original weights' answers on the reward set are cached, so a run no longer spends 12 minutes regenerating them.
+Why: without these, a mismatch between Tinker's sampler and trainer, or a collapse in entropy, would go unnoticed.
+
 **Hero run restarted as `hero2`** (13:45). In `hero1` a target machine ran out of memory and was replaced, which reset that rollout's sandbox, including its saved edit, without telling the editor. Rollout logs were also only saved at the end of a step.
 - Target memory doubled to 96 GB.
 - The harness checks after every tool call whether the target machine was replaced, and if so tells the editor that `/work`, its variables and its edit are gone. Each rollout records how many times this happened.

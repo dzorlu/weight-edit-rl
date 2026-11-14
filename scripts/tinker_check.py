@@ -60,13 +60,19 @@ traj = Trajectory(
                  Transition(ob=ob2, ac=TokensWithLogprobs(tokens=list(s2.tokens), maybe_logprobs=list(s2.logprobs), sequence_id=getattr(s2, "sequence_id", None)), reward=1.0, episode_done=True)],
     final_ob=tinker.ModelInput.empty())
 data = trajectory_to_data(traj, 1.0, include_provenance=False)
+masks, samp = [], []
 for d in data:
-    d.loss_fn_inputs.pop("mask", None)  # importance_sampling takes only target_tokens, logprobs, advantages
+    masks.append(d.loss_fn_inputs.pop("mask").to_torch() > 0)  # importance_sampling takes only target_tokens, logprobs, advantages
+    samp.append(d.loss_fn_inputs["logprobs"].to_torch())
 print("training sequences from the two turns:", len(data), "| lengths", [d.model_input.length for d in data])
 t1 = time.time()
 fb = tc.forward_backward(data, loss_fn="importance_sampling")
 op = tc.optim_step(tinker.AdamParams(learning_rate=1e-5, beta1=0.9, beta2=0.95, eps=1e-8))
-res = fb.result(); op.result()
+res = fb.result(); opt_res = op.result()
+import torch
+diffs = torch.cat([sp[mk] - lp[mk] for sp, mk, lp in zip(samp, masks, [o["logprobs"].to_torch() for o in res.loss_fn_outputs])])
+print("sampler vs trainer on", diffs.numel(), "action tokens: KL v1", round(diffs.mean().item(), 5), "v2", round(0.5 * (diffs ** 2).mean().item(), 5), "max |diff|", round(diffs.abs().max().item(), 3))
+print("optim metrics:", getattr(opt_res, "metrics", None))
 print("forward_backward + optim_step ok in", round(time.time() - t1), "s | metrics", {k: round(v, 4) for k, v in list(res.metrics.items())[:4]})
 ck = tc.save_weights_for_sampler("smoke").result()
 print("sampler checkpoint:", ck.path)

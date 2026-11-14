@@ -366,7 +366,12 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 
     # The original weights' answers on the reward set are the same for every rollout: generate them once.
     t = time.time()
-    base_rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base").reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
+    base_cache = f"/runs/rl/_reward_base_{len(items)}x{reward_n}.json"  # the original weights' answers on the reward set never change
+    if os.path.exists(base_cache):
+        base_rows = json.load(open(base_cache))
+    else:
+        base_rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base").reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
+        json.dump(base_rows, open(base_cache, "w"))
     base_ok = {(r["qid"], r["sample"]): r["correct"] for r in base_rows}
     base_acc = sum(base_ok.values()) / len(base_ok)
     slog({"event": "reward_base", "answers": len(base_ok), "accuracy": round(base_acc, 4), "hit_cap": round(sum(r["finish"] == "length" for r in base_rows) / len(base_rows), 4), "seconds": round(time.time() - t)})
@@ -564,15 +569,24 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             mean = sum(rewards) / len(rewards)
             std = (sum((r - mean) ** 2 for r in rewards) / len(rewards)) ** 0.5
             adv = [(r - mean) / (std + 1e-6) for r in rewards]  # centred and scaled within the group
-            t1, n_tok, futs = time.time(), 0, []
+            t1, n_tok, futs, masks, samp = time.time(), 0, [], [], []
             for (tr, _), a in zip(good, adv):
                 for dm in trajectory_to_data(tr, float(a), include_provenance=False):
-                    dm.loss_fn_inputs.pop("mask", None)  # importance_sampling takes target_tokens, logprobs, advantages
+                    masks.append(dm.loss_fn_inputs.pop("mask").to_torch() > 0)  # importance_sampling takes target_tokens, logprobs, advantages
+                    samp.append(dm.loss_fn_inputs["logprobs"].to_torch())
                     n_tok += dm.model_input.length
                     futs.append(tc.forward_backward([dm], loss_fn="importance_sampling"))
             opt = tc.optim_step(adam)
-            metrics = await asyncio.to_thread(lambda: [f.result().metrics for f in futs])
-            await asyncio.to_thread(lambda: opt.result())
+            results = await asyncio.to_thread(lambda: [f.result() for f in futs])
+            optim = await asyncio.to_thread(lambda: opt.result())
+            metrics = [r.metrics for r in results]
+            # Sampler against trainer on the same tokens (as in tinker_cookbook.rl.metrics.compute_kl_sample_train)
+            diffs = torch.cat([sp[mk] - r.loss_fn_outputs[0]["logprobs"].to_torch()[mk] for sp, mk, r in zip(samp, masks, results)])
+            sp_all = torch.cat([sp[mk] for sp, mk in zip(samp, masks)])
+            rec.update(kl_sample_train_v1=round(diffs.mean().item(), 5), kl_sample_train_v2=round(0.5 * (diffs ** 2).mean().item(), 5),
+                       logprob_diff_max=round(diffs.abs().max().item(), 3), frac_tokens_diff_over_0p2=round((diffs.abs() > 0.2).float().mean().item(), 5),
+                       entropy=round(-sp_all.mean().item(), 4), action_tokens=int(sp_all.numel()),
+                       optim_metrics={k: round(float(v), 5) for k, v in (getattr(optim, "metrics", None) or {}).items()})
             rec.update(trained=True, advantages=[round(a, 3) for a in adv], training_sequences=len(futs), training_tokens=n_tok,
                        training_usd=round(n_tok * PRICE["train"] / 1e6, 2), loss_sum=round(sum(m.get("loss:sum", 0.0) for m in metrics), 3), training_seconds=round(time.time() - t1))
         else:
