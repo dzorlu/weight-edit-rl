@@ -4,6 +4,14 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**Hero run started** (`hero1`, 13:06): 6 RL steps of 8 rollouts, 32 forward passes and 120 minutes per rollout, web and library on, reward on 128 problems × 2 samples. First run with every change below.
+
+**Problem sets named train, validation, test and reward set** in the README and on the website. The editor's prompt still says "practice", to keep rollouts comparable.
+
+**Baseline summary lists only frequent words.**
+The list of words that open lines more often in cut-off answers now only counts words seen at least 200 times.
+Why: the first version ranked by ratio and was led by rare words such as "Diego".
+
 **Original answers are cached.**
 The original weights' answers on the `select`, `confirm_1` and `confirm_2` splits are generated once and stored in `/practice/original/`. The forward tool serves them from the cache, so a paired test only generates the edited side. Only the text and its grading are cached, not activations.
 Why: every rollout regenerated the same original answers, and generation is nearly all of a rollout's GPU time.

@@ -50,12 +50,16 @@ The RL loop has run one full step on a small test (4 rollouts, 8 forward passes 
      └────────────────────┘     └──────────────────────────────┘
 ```
 
-- **Rollout.** One editing search on a fresh copy of the target. The editor calls two tools until it submits an edit or keeps the original weights.
+- **Rollout.** One editing search on a fresh copy of the target, ending with the editor's best edit. The target always starts from its original weights; only the editor changes between RL steps.
+- **Problem sets.** Train: MATH and GSM8K training problems, with a ready-made index and disjoint splits for diagnosing and choosing (`select`) and for checking the final edit (validation: `confirm_1`, `confirm_2`). Reward set: hidden MATH training problems that score each rollout. Test: MATH-500, run once on standalone searches.
+- **Given at the start.** The original weights' answers on 512 train generations with a summary of the failure, and their answers on every split. The forward tool reuses these, so a paired test only generates the edited side.
 - **`python` tool.** A CPU sandbox with the target's weights on disk: load a tensor, analyse it, save an edited tensor. No internet, no gradients.
-- **`forward` tool.** Runs the target on a GPU. Either it answers practice problems (original weights, edited weights, or both side by side), or it reads supplied text and returns log-probabilities and activations. The number of calls is limited.
-- **Reward.** Accuracy with the submitted edit minus accuracy with the original weights, on a hidden reward set the editor never sees. The editor always submits its best edit, so a harmful edit scores below zero.
+- **`forward` tool.** Runs the target on a GPU. Either it answers train problems (original weights, edited weights, or both side by side), or it reads supplied text and returns log-probabilities and activations. The number of calls is limited.
+- **Edits.** Any tensor inside the transformer blocks. So far every edit changed an output matrix: one or a few columns, or a rank-one term across every column.
 - **Web and library (optional).** `web_search` and `web_read` let the editor look up methods and read papers. What it saves in `/library` is kept for later rollouts. Pages that publish an edit for this exact model are filtered out.
-- **RL step.** A group of rollouts from the current checkpoint, one policy-gradient update on Tinker, a new checkpoint.
+- **Countdown.** After every tool result the editor sees what is left: forward passes, Python runs, web calls, minutes and context.
+- **Reward.** Accuracy with the submitted edit minus accuracy with the original weights, on the reward set, 256 paired answers. A harmful edit scores below zero.
+- **RL step.** A group of 8 rollouts from the current checkpoint, rewards centred and scaled within the group, one policy-gradient step on Tinker (importance-sampling loss, LoRA rank 32), a new checkpoint.
 
 ## Run it
 
