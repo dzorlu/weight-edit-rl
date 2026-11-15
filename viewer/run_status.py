@@ -94,7 +94,7 @@ def step_detail(r, s, n, note):
         pct = lambda a: "–" if a is None else f"{a * 100:.1f}%"
         p.append(f"<tr><td><a href='../../traces/#rl-{e(x['rid'])}'>{int(x['rid'].rsplit('-r', 1)[1]) + 1}</a></td><td>{sgn(v['reward'])}</td><td>{tt}</td>"
                  f"<td>{pct(v['acc'])}</td><td>{pct(v['cap'])}</td><td>{v['tens']}</td><td>{v['turns']}</td><td>{v['minutes']}</td>"
-                 f"<td>{v['fwd']}</td><td>{v['py']}</td><td>{v['web']}</td><td>{e(x.get('ended', ''))}</td></tr>")
+                 f"<td>{v['fwd']}</td><td>{'–' if v['py'] is None else v['py']}</td><td>{v['web']}</td><td>{e(x.get('ended', ''))}</td></tr>")
     def mean(k):
         xs = [v[k] for v in vals if v[k] is not None]
         return sum(xs) / len(xs) if xs else None
@@ -107,50 +107,71 @@ def step_detail(r, s, n, note):
     return p
 
 
+COLS = ["Rollout", "Reward", "Test", "Edited accuracy", "Hit cap", "Tensors edited", "Turns", "Minutes", "Forward passes", "Python calls", "Ended"]
+
+
+def step_table(r, rows, title):
+    """rows: per-rollout dicts (finished summaries or live progress). One row each, then the mean."""
+    pct = lambda a: "–" if a is None else f"{a * 100:.1f}%"
+    def test_of(rid):
+        t = r["test"].get(rid)
+        if t and t.get("paired"):
+            return t["paired"]["diff_pp"]
+        return None
+    out = [f"<h2>{title}</h2><div class='tw'><table><tr>" + "".join(f"<th>{c}</th>" for c in COLS) + "</tr>"]
+    vals = []
+    for x in rows:
+        done = x.get("reward") is not None
+        t = test_of(x["rid"])
+        tt = f"{t:+.1f}" if t is not None else ("no edit" if x["rid"] in r["test"] else "–")
+        v = dict(reward=x.get("reward"), test=t, acc=x.get("edited_accuracy"), cap=x.get("edited_hit_cap"),
+                 tens=len(x["edited_tensors"]) if done else None, turns=x.get("turns"), minutes=x.get("minutes"),
+                 fwd=x.get("forward_used"), py=x.get("python_used"))
+        vals.append(v)
+        n = int(x["rid"].rsplit("-r", 1)[1]) + 1
+        out.append(f"<tr><td><a href='../../traces/#rl-{e(x['rid'])}'>{n}</a></td><td>{sgn(v['reward']) if done else 'running'}</td><td>{tt}</td>"
+                   f"<td>{pct(v['acc'])}</td><td>{pct(v['cap'])}</td><td>{'–' if v['tens'] is None else v['tens']}</td><td>{v['turns']}</td>"
+                   f"<td>{v['minutes']}</td><td>{v['fwd']}</td><td>{'–' if v['py'] is None else v['py']}</td><td>{e(x.get('ended', '')) if done else ''}</td></tr>")
+    def mean(k):
+        xs = [v[k] for v in vals if v[k] is not None and v["reward"] is not None]
+        return sum(xs) / len(xs) if xs else None
+    f1 = lambda k: "–" if mean(k) is None else f"{mean(k):.1f}"
+    nd = sum(v["reward"] is not None for v in vals)
+    lab = "Mean" if nd == len(vals) else f"Mean of {nd} finished"
+    tm = mean("test")
+    out.append(f"<tr class='avg'><td>{lab}</td><td>{sgn(mean('reward'))}</td><td>{'–' if tm is None else f'{tm:+.1f}'}</td>"
+               f"<td>{pct(mean('acc'))}</td><td>{pct(mean('cap'))}</td><td>{f1('tens')}</td><td>{f1('turns')}</td><td>{f1('minutes')}</td>"
+               f"<td>{f1('fwd')}</td><td>{f1('py')}</td><td></td></tr></table></div>")
+    return out
+
+
+def live_rows(r, step):
+    rows = []
+    for x in rollout_rows(r["d"], r["name"], step):
+        if x["done"]:
+            rows.append(x["done"])
+        else:
+            rows.append(dict(rid=x["rid"], turns=x["turns"], minutes=x["minutes"], forward_used=x["fwd"], python_used=None))
+    return rows
+
+
 def run_page(r):
-    rel = (f"Branched from <a href='../{e(r['parent'])}/'>{e(r['parent'])}</a> after step {r['offset']}: it starts from that step's checkpoint, "
-           f"so step{'s' if r['offset'] > 1 else ''} 1{'' if r['offset'] == 1 else f' to {r[chr(39) + 'offset' + chr(39)]}'} below {'are' if r['offset'] > 1 else 'is'} shared with {e(r['parent'])}."
-           if r["parent"] else "Starts from the untrained model.")
-    p = [f"<h1>RL run: {e(r['name'])}</h1>",
-         f"<div class='meta'>Updated {STAMP} · <a href='../'>all runs</a> · <a href='../../'>map of the edits</a> · <a href='../../traces/'>trajectories</a> · "
-         f"<a href='../../changelog/'>changelog</a> · <a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(r['name'])}'>logs</a></div>",
-         f"<p>{NOTES.get(r['name'], '').capitalize()}. {rel} State: {state_of(r)}.</p>", INTRO, "<h2>Steps</h2><p class='meta'>Every step listed here has finished: all rollouts scored and the training update applied. &quot;Being scored&quot; means the step's edits are still running on MATH-500.</p>", HEAD]
+    head = (f"Branched from {e(r['parent'])} after step {r['offset']}; step 1 is shared with {e(r['parent'])}. No notes library, no web tools."
+            if r["parent"] else "With the shared notes library and web tools.")
+    p = [f"<h1>{e(r['name'])}</h1><div class='meta'>{head} Updated {STAMP} · <a href='../'>all runs</a></div>"]
     if r["parent"]:
         par = byname.get(r["parent"])
         for s in (par["done"][:r["offset"]] if par else []):
-            p.append(step_row(par, s, s["step"] + 1 + par["offset"], f"shared with {e(par['name'])}"))
+            p += step_table(par, s.get("rollouts", []), f"Step {s['step'] + 1 + par['offset']}")
     for s in r["done"]:
-        p.append(step_row(r, s, s["step"] + 1 + r["offset"], ""))
+        p += step_table(r, s.get("rollouts", []), f"Step {s['step'] + 1 + r['offset']}")
     cur = len(r["done"])
     if state_of(r) == "running" and cur < r["cfg"]["steps"]:
-        p.append(f"<tr><td>{cur + 1 + r['offset']}</td><td colspan='6'>in progress</td></tr>")
-        rr = rollout_rows(r["d"], r["name"], cur)
-        p.append("</table></div>")
-        p.append(f"<h2>Step {cur + 1 + r['offset']}, in progress</h2>")
-        if not rr:
-            p.append("<p>Rollouts are starting.</p>")
-        else:
-            p.append("<div class='tw'><table><tr><th>Rollout</th><th>Turns</th><th>Minutes</th><th>Forward passes</th><th>Best paired test so far</th><th>State</th></tr>")
-            for x in rr:
-                best = f"{x['best'][0]:+.1f} ± {x['best'][1]}, {x['best'][2]} answers per side" if x["best"] else "–"
-                st = f"done: reward {sgn(x['done']['reward'])}, {e(x['done']['ended'])}" if x["done"] else "running"
-                if x["restarts"]:
-                    st += f", target restarted {x['restarts']}×"
-                p.append(f"<tr><td><a href='../../traces/#rl-{e(x['rid'])}'>{x['n']}</a></td><td>{x['turns']}</td><td>{x['minutes']}</td>"
-                         f"<td>{x['fwd']} / {r['cfg']['forward_budget']}</td><td>{best}</td><td>{st}</td></tr>")
-            p.append("</table></div><p class='meta'>A paired test runs the original and the edited weights on the same train problems. Tests on fewer than 64 answers are not shown.</p>")
-    else:
-        p.append("</table></div>")
-    p.append("<h2>Rollouts per step</h2><p class='meta'>Reward and test in points. Edited accuracy and hit cap: share of the 256 reward-set answers that are correct, and that reach the 8,192-token limit (original weights: 7.4% and 93%). Test: the edit on MATH-500 minus the original 6.6%.</p>")
-    det = []
-    if r["parent"]:
-        par = byname.get(r["parent"])
-        for s in (par["done"][:r["offset"]] if par else []):
-            det.append(step_detail(par, s, s["step"] + 1 + par["offset"], f"shared with {e(par['name'])}"))
-    for s in r["done"]:
-        det.append(step_detail(r, s, s["step"] + 1 + r["offset"], ""))
-    for d in reversed(det):
-        p.extend(d)
+        rows = live_rows(r, cur)
+        if rows:
+            p += step_table(r, rows, f"Step {cur + 1 + r['offset']} (running)")
+    p.append("<p class='meta'>Reward: edited minus original accuracy on the reward set (256 answers, original 7.4%), in points. "
+             "Test: the same on MATH-500 (original 6.6%), not used for training; scored after a step finishes, – until then. Hit cap: share of answers reaching 8,192 tokens (original 93%).</p>")
     return p, "../../../"
 
 
