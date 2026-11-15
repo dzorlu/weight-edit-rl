@@ -449,7 +449,8 @@ def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2
 async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
                  reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = "",
                  rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "",
-                 mode: str = "rl", eval_dataset: str = "math500", eval_limit: int = 0, eval_parallel: int = 4):
+                 mode: str = "rl", eval_dataset: str = "math500", eval_limit: int = 0, eval_parallel: int = 4,
+                 advantage: str = "grpo", adv_scale: float = 0.10):
     """start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
     mode "eval" (rl.loop::evaluate): one group of rollouts from `start_from` (a state or sampler path; "" is the untrained
     editor) with no training update, written to /runs/eval/<exp>/; every submitted edit is then scored on `eval_dataset`.
@@ -515,7 +516,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             elif not os.path.exists(path) or len(text) > os.path.getsize(path):
                 open(path, "w").write(text)
     json.dump({"exp": exp, "model": MODEL, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
-               "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
+               "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "advantage": advantage, "adv_scale": adv_scale, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
                "rebase_every": rebase_every, "start_base": start_base, "update_check": update_check, "start_from": start_from,
                "baseline_given": bool(known), "mode": mode, "eval_dataset": eval_dataset if evaluating else None, "eval_limit": eval_limit,
                "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
@@ -812,7 +813,11 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         if len(set(rewards)) >= 2:
             mean = sum(rewards) / len(rewards)
             std = (sum((r - mean) ** 2 for r in rewards) / len(rewards)) ** 0.5
-            adv = [(r - mean) / (std + 1e-6) for r in rewards]  # centred and scaled within the group
+            if advantage == "mean":  # Dr. GRPO (arXiv 2503.20783): no division by the group's spread, which inflates near-identical groups;
+                # a fixed scale (0.10 = the typical group spread on Qwen as downloaded) keeps the update size of groups with real spread
+                adv = [(r - mean) / adv_scale for r in rewards]
+            else:
+                adv = [(r - mean) / (std + 1e-6) for r in rewards]  # GRPO: centred and scaled within the group
             t1, n_tok, futs, batch = time.time(), 0, [], []
             for (tr, info), a in zip(good, adv):
                 for dm in trajectory_to_data(tr, float(a), include_provenance=False):
@@ -880,9 +885,10 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 @app.local_entrypoint()
 def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
        reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = "", rollouts_per_gpu: int = 1,
-       rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = ""):
+       rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "", advantage: str = "grpo", adv_scale: float = 0.10):
+    """advantage: "grpo" = (reward - group mean) / group spread; "mean" = (reward - group mean) / adv_scale (Dr. GRPO)."""
     call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library, rollouts_per_gpu,
-                        rebase_every, update_check, start_base, force_rewards)
+                        rebase_every, update_check, start_base, force_rewards, advantage=advantage, adv_scale=adv_scale)
     print("SPAWNED", call.object_id)
 
 

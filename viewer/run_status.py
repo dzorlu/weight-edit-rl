@@ -13,6 +13,7 @@ NOTES = {"hero3": "with the shared notes library and web tools",
          "nolib1": "no notes library, no web tools",
          "rebase2": "No notes, no web tools, learning rate 2e-4; the starting model is updated to the best edit so far every 2 steps.",
          "rebase2b": "Continues rebase2 from its last checkpoint and starting model (rebase2-k2). No notes, no web tools, learning rate 2e-4; the starting model is updated every 2 steps.",
+         "drgrpo12": "Continues rebase2 from its last checkpoint and starting model (rebase2-k2) with 12 rollouts per step and Dr. GRPO advantages (reward minus group mean, divided by a fixed 0.10, not by the group's spread). Starting model updated every 2 steps; learning rate 2e-4; no notes, no web tools.",
          "rebase1": "No notes, no web tools, learning rate 2e-4; the starting model is updated to the best edit so far every step."}
 
 
