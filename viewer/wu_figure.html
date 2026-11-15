@@ -1,96 +1,93 @@
-<!-- Interactive single-layer figure: x * W [M, D] @ U [D, V] = each unit's contribution to each token's logit [M, V]. Spliced into posts/weight-edits/index.html. -->
+<!-- Interactive single-layer figure: x [M] * W [M, D] * u [D] = contribution of each weight to the "Wait" logit [M, D], with row sums. Spliced into posts/weight-edits/index.html. -->
 <div class="wu" id="wu">
   <div class="wu-row">
-    <div class="wu-block"><div class="wu-cap"><code>x</code> [4]</div><div style="height:14px"></div><div class="wu-col" id="wu-x"></div></div>
+    <div class="wu-block"><div class="wu-cap"><code>x</code> [4]</div><div class="wu-sp"></div><div class="wu-col" id="wu-x"></div></div>
     <div class="wu-op">*</div>
-    <div class="wu-block"><div class="wu-cap"><code>W</code> [4 × 3]</div><div class="wu-tok"></div><div class="wu-grid" id="wu-W"></div></div>
-    <div class="wu-op">=</div>
-    <div class="wu-block"><div class="wu-cap"><code>x * W</code> [4 × 3]</div><div class="wu-tok"></div><div class="wu-grid" id="wu-XW"></div><div class="wu-note">Row j: what unit j writes.</div></div>
-    <div class="wu-op">@</div>
-    <div class="wu-block"><div class="wu-cap"><code>U</code> [3 × 3]</div><div class="wu-tok" id="wu-Uh"></div><div class="wu-grid" id="wu-U"></div><div class="wu-note">One column per token.</div></div>
-    <div class="wu-op">=</div>
+    <div class="wu-block"><div class="wu-cap"><code>W</code> [4 × 3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-W"></div></div>
+    <div class="wu-op">*</div>
     <div class="wu-block">
-      <div class="wu-cap">contribution [4 units × 3 tokens]</div>
-      <div class="wu-tok wu-ind" id="wu-Ch"></div>
-      <div class="wu-withlab"><div class="wu-lab" id="wu-rl"></div><div class="wu-grid" id="wu-C"></div></div>
-      <div class="wu-withlab"><div class="wu-lab wu-sl">column sum</div><div class="wu-grid wu-sumrow" id="wu-L"></div></div>
+      <div class="wu-cap"><code>u</code> [3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-u"></div>
+      <div class="wu-cap wu-ucap"><code>U</code> [3 × 3], "Wait" column = <code>u</code></div>
+      <div class="wu-tok" id="wu-Uh"></div><div class="wu-ugrid" id="wu-U"></div>
     </div>
+    <div class="wu-op">=</div>
+    <div class="wu-block"><div class="wu-cap">contribution to "Wait" [4 × 3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-C"></div></div>
+    <div class="wu-op wu-sumop">sum<br>row</div>
+    <div class="wu-block"><div class="wu-cap">per unit [4]</div><div class="wu-sp"></div><div class="wu-col" id="wu-S"></div></div>
   </div>
   <div class="wu-total" id="wu-total"></div>
-  <div class="wu-read" id="wu-read" aria-live="polite">Hover or tap a cell.</div>
+  <div class="wu-read" id="wu-read" aria-live="polite">Hover a cell of <code>W</code> for one weight, or a unit on the right for its row.</div>
 </div>
-<noscript><p>The figure needs JavaScript. x = [1, 2, 1.5, 0.5]; W rows [0.5, 0, 1], [−1, 0.5, 0], [2, 1, 0.5], [0, −1, 1]; U columns Wait [1, 0.5, 0], &lt;/think&gt; [0, 1, 0], So [−1, 0, 0.5]. Each unit's part of the "Wait" logit: 0.5, −1.5, 3.75, −0.25; the layer's part 2.5.</p></noscript>
+<noscript><p>The figure needs JavaScript. x = [1, 2, 1.5, 0.5]; W rows [0.5, 0, 1], [−1, 0.5, 0], [2, 1, 0.5], [0, −1, 1]; u = [1, 0.5, 0]. Contribution rows [0.5, 0, 0], [−2, 0.5, 0], [3, 0.75, 0], [0, −0.25, 0]; per unit 0.5, −1.5, 3.75, −0.25; layer total 2.5.</p></noscript>
 <style>
 .dfig:has(> .wu){overflow:visible}
-.wu{margin:16px 0 8px;padding:12px;border:1px solid var(--line);border-radius:8px;overflow-x:auto;box-sizing:border-box;position:relative;width:min(1100px,calc(100vw - 32px));left:50%;transform:translateX(-50%);background:var(--bg)}
-.wu-row{display:flex;align-items:flex-start;gap:6px;min-width:960px;justify-content:center}
+.wu{margin:16px 0 8px;padding:12px;border:1px solid var(--line);border-radius:8px;overflow-x:auto;box-sizing:border-box;position:relative;width:min(1000px,calc(100vw - 32px));left:50%;transform:translateX(-50%);background:var(--bg)}
+.wu-row{display:flex;align-items:flex-start;gap:8px;min-width:820px;justify-content:center}
 .wu-block{display:flex;flex-direction:column;gap:4px}
-.wu-cap{font-size:12.5px;color:var(--muted);min-height:20px;white-space:nowrap}
-.wu-tok{display:grid;grid-template-columns:repeat(3,50px);gap:3px;font-size:10.5px;color:var(--muted);text-align:center;height:14px;white-space:nowrap}
-.wu-tok div{overflow:hidden}
-.wu-ind{margin-left:58px}
+.wu-cap{font-size:12.5px;color:var(--muted);height:18px;white-space:nowrap}
+.wu-ucap{margin-top:14px;font-size:11px}
+.wu-sp{height:2px}
 .wu-grid{display:grid;grid-template-columns:repeat(3,50px);gap:3px}
-.wu-col{display:grid;grid-template-rows:repeat(4,34px);grid-template-columns:44px;gap:3px}
-.wu-withlab{display:flex;gap:6px;align-items:flex-start}
-.wu-lab{display:grid;grid-template-rows:repeat(4,34px);gap:3px;width:52px;font-size:11px;color:var(--muted)}
-.wu-lab div{display:flex;align-items:center;justify-content:flex-end}
-.wu-sl{display:flex;align-items:center;justify-content:flex-end;height:34px;grid-template-rows:none;margin-top:6px}
-.wu-sumrow{margin-top:6px}
-.wu .c{height:34px;min-width:34px;display:flex;align-items:center;justify-content:center;font:11.5px ui-monospace,Menlo,monospace;border-radius:4px;color:var(--ink);cursor:pointer;outline:none}
-#wu-L .c{border:1px solid var(--line);font-weight:600}
+.wu-col{display:grid;grid-template-columns:50px;gap:3px}
+.wu-tok{display:grid;grid-template-columns:repeat(3,40px);gap:2px;font-size:10px;color:var(--muted);text-align:center;white-space:nowrap}
+.wu-tok div{overflow:hidden}
+.wu-ugrid{display:grid;grid-template-columns:repeat(3,40px);gap:2px}
+.wu .c{height:34px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;border-radius:4px;color:var(--ink);outline:none;transition:opacity .12s}
+.wu .c.h{cursor:pointer}
+.wu-ugrid .c{height:24px;font-size:11px}
+#wu-S .c{border:1px solid var(--line);font-weight:600}
+#wu-u .c{border:1px solid var(--line);font-weight:600}
 .wu .c.wait{box-shadow:inset 0 0 0 2px var(--accent)}
-.wu-note{max-width:160px;font-size:11px;color:var(--muted);margin-top:6px;line-height:1.35}
-.wu .c.dim{opacity:.3}
-.wu .c.hi,.wu .c:focus-visible{box-shadow:0 0 0 2px var(--accent)}
-.wu-op{align-self:flex-start;margin-top:96px;min-width:16px;text-align:center;font:600 18px ui-monospace,Menlo,monospace;color:var(--ink)}
-.wu-total{margin-top:12px;font-size:14px}
-.wu-read{margin-top:6px;font-size:14px;color:var(--muted);min-height:1.5em}
+.wu .c.dim{opacity:.22}
+.wu .c.hi{box-shadow:0 0 0 2.5px var(--accent);opacity:1}
+.wu .c:focus-visible{box-shadow:0 0 0 2.5px var(--accent)}
+.wu-op{align-self:flex-start;margin-top:74px;min-width:14px;text-align:center;font:600 18px ui-monospace,Menlo,monospace;color:var(--ink)}
+.wu-sumop{font:12px -apple-system,system-ui,sans-serif;color:var(--muted);margin-top:68px}
+.wu-total{margin-top:14px;font-size:14px}
+.wu-read{margin-top:6px;font-size:15px;min-height:1.5em}
 </style>
 <script>
 (function () {
   const W = [[0.5, 0, 1], [-1, 0.5, 0], [2, 1, 0.5], [0, -1, 1]], x = [1, 2, 1.5, 0.5];
-  const U = [[1, 0, -1], [0.5, 1, 0], [0, 0, 0.5]], TOK = ['Wait', '&lt;/think&gt;', 'So'];
-  const XW = W.map((r, j) => r.map(v => x[j] * v));
-  const C = XW.map(r => [0, 1, 2].map(k => r.reduce((a, v, d) => a + v * U[d][k], 0)));
-  const L = [0, 1, 2].map(k => C.reduce((a, r) => a + r[k], 0));
+  const U = [[1, 0, -1], [0.5, 1, 0], [0, 0, 0.5]], u = U.map(r => r[0]);
+  const C = W.map((r, j) => r.map((v, d) => x[j] * v * u[d]));
+  const S = C.map(r => r.reduce((a, b) => a + b, 0)), total = S.reduce((a, b) => a + b, 0);
   const fmt = v => (Math.abs(v) < 1e-9 ? 0 : Math.round(v * 1000) / 1000).toString().replace('-', '−');
   const tint = (v, vmax) => Math.abs(v) < 1e-9 ? 'var(--code)' :
     `color-mix(in srgb, ${v > 0 ? 'var(--pos)' : 'var(--neg)'} ${Math.round(20 + 70 * Math.min(1, Math.abs(v) / vmax))}%, transparent)`;
   const $ = id => document.getElementById(id), all = [];
-  const cell = (parent, v, vmax, color = true) => {
-    const c = document.createElement('div'); c.className = 'c'; c.tabIndex = 0; c.textContent = fmt(v);
-    if (color) c.style.background = tint(v, vmax); parent.appendChild(c); all.push(c); return c;
+  const cell = (parent, v, vmax, hover) => {
+    const c = document.createElement('div'); c.className = 'c' + (hover ? ' h' : ''); c.textContent = fmt(v);
+    if (hover) c.tabIndex = 0;
+    if (vmax) c.style.background = tint(v, vmax); parent.appendChild(c); all.push(c); return c;
   };
-  ['wu-Uh', 'wu-Ch'].forEach(id => $(id).innerHTML = TOK.map(n => `<div>${n}</div>`).join(''));
-  $('wu-rl').innerHTML = [0, 1, 2, 3].map(j => `<div>unit ${j}</div>`).join('');
-  const cx = x.map(v => cell($('wu-x'), v, 2, false));
-  const cW = W.map(r => r.map(v => cell($('wu-W'), v, 2)));
-  const cXW = XW.map(r => r.map(v => cell($('wu-XW'), v, 3)));
-  const cU = U.map(r => r.map(v => cell($('wu-U'), v, 1)));
-  const cC = C.map(r => r.map(v => cell($('wu-C'), v, 4)));
-  const cL = L.map(v => cell($('wu-L'), v, 4));
-  cU.forEach(r => r[0].classList.add('wait')); cC.forEach(r => r[0].classList.add('wait')); cL[0].classList.add('wait');
-  const top = [0, 1, 2, 3].reduce((b, j) => C[j][0] > C[b][0] ? j : b, 0);
-  $('wu-total').innerHTML = `Outlined: the "Wait" column. This layer adds <b>${fmt(L[0])}</b> to the "Wait" logit. Unit ${top} adds the most, ${fmt(C[top][0])}: the candidate to delete or edit.`;
-  const focus = list => { all.forEach(c => c.classList.add('dim')); list.forEach(c => { c.classList.remove('dim'); c.classList.add('hi'); }); };
-  const reset = () => { all.forEach(c => c.classList.remove('dim', 'hi')); $('wu-read').textContent = 'Hover or tap a cell.'; };
-  const showC = (j, k) => {
-    reset(); focus([cx[j], ...cW[j], ...cXW[j], ...cU.map(r => r[k]), cC[j][k]]);
-    $('wu-read').innerHTML = `Unit ${j}, "${TOK[k]}": row ${j} of x * W · column "${TOK[k]}" of U = ` +
-      XW[j].map((v, d) => `${fmt(v)}×${fmt(U[d][k])}`).join(' + ') + ` = <b>${fmt(C[j][k])}</b>`;
+  const cx = x.map(v => cell($('wu-x'), v, 0, true));
+  const cW = W.map(r => r.map(v => cell($('wu-W'), v, 2, true)));
+  const cu = u.map(v => cell($('wu-u'), v, 0, false));
+  $('wu-Uh').innerHTML = ['Wait', '&lt;/think&gt;', 'So'].map(n => `<div>${n}</div>`).join('');
+  const cU = U.map(r => r.map(v => cell($('wu-U'), v, 1, false)));
+  cU.forEach(r => r[0].classList.add('wait'));
+  const cC = C.map(r => r.map(v => cell($('wu-C'), v, 3, true)));
+  const cS = S.map(v => cell($('wu-S'), v, 3, true));
+  const top = S.indexOf(Math.max(...S));
+  const idle = 'Hover a cell of <code>W</code> for one weight, or a unit on the right for its row.';
+  $('wu-total').innerHTML = `Layer total, every cell added: <b>${fmt(total)}</b>. Unit ${top} contributes the most, ${fmt(S[top])}: the row to delete or edit.`;
+  const light = list => { all.forEach(c => c.classList.add('dim')); list.forEach(c => { c.classList.remove('dim'); c.classList.add('hi'); }); };
+  const reset = () => { all.forEach(c => c.classList.remove('dim', 'hi')); $('wu-read').innerHTML = idle; };
+  const showCell = (j, d) => {
+    reset(); light([cx[j], cW[j][d], cu[d], cU[d][0], cC[j][d]]);
+    $('wu-read').innerHTML = `W[${j}][${d}]: x[${j}] × W[${j}][${d}] × u[${d}] = ${fmt(x[j])} × ${fmt(W[j][d])} × ${fmt(u[d])} = <b>${fmt(C[j][d])}</b>`;
   };
-  const showL = k => {
-    reset(); focus([...cC.map(r => r[k]), cL[k]]);
-    $('wu-read').innerHTML = `The layer's part of the "${TOK[k]}" logit: ${C.map(r => fmt(r[k])).join(' + ')} = <b>${fmt(L[k])}</b>`;
-  };
-  const showXW = (j, d) => {
-    reset(); focus([cx[j], cW[j][d], cXW[j][d]]);
-    $('wu-read').innerHTML = `x[${j}] × W[${j}, ${d}] = ${fmt(x[j])} × ${fmt(W[j][d])} = <b>${fmt(XW[j][d])}</b>`;
+  const showRow = j => {
+    reset(); light([cx[j], ...cW[j], ...cu, ...cU.map(r => r[0]), ...cC[j], cS[j]]);
+    $('wu-read').innerHTML = `Unit ${j}, row ${j} of W: ${C[j].map(fmt).join(' + ')} = <b>${fmt(S[j])}</b>`;
   };
   const on = (c, f) => ['mouseenter', 'focus', 'click'].forEach(e => c.addEventListener(e, f));
-  cC.forEach((r, j) => r.forEach((c, k) => on(c, () => showC(j, k))));
-  cL.forEach((c, k) => on(c, () => showL(k)));
-  [cW, cXW].forEach(G => G.forEach((r, j) => r.forEach((c, d) => on(c, () => showXW(j, d)))));
+  cW.forEach((r, j) => r.forEach((c, d) => on(c, () => showCell(j, d))));
+  cC.forEach((r, j) => r.forEach((c, d) => on(c, () => showCell(j, d))));
+  cS.forEach((c, j) => on(c, () => showRow(j)));
+  cx.forEach((c, j) => on(c, () => showRow(j)));
   $('wu').addEventListener('mouseleave', reset);
+  reset();
 })();
 </script>
