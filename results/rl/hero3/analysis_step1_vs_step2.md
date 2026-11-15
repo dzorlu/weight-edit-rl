@@ -101,3 +101,10 @@ Opus built its own splits (the older prompt gave no baseline or `splits.json`), 
 - s1-r5 is unfinished. Step 2 has no MATH-500 scores; step 1 r6 and r7 are pending.
 - Opus used an older prompt, a 50-pass budget, no baseline files and its own splits. Only its MATH-500 score is comparable.
 - Attribution and difference-of-means counts come from regular expressions and are approximate. Edit form, direction and strength were read by hand.
+
+
+## Corrections from an audit of all trajectories (2026-11-14)
+
+- **hero3-s1-r1 and hero3-s1-r2: the " Wait" removal acted on numerical noise.** Both built d_wait by projecting r(13428) off the span of the top-600 frequent-token readouts, and " Wait" (13428) is itself one of those 600 tokens, so the residual is near zero and normalizing it returns noise. Evidence: in r1 the two readout conventions give d_wait vectors with cos 0.04 (the same construction for `</think>` gives 0.997); in r2 the normalized d_wait has cos −0.20 with r(13428). s1-r0 hit the same problem (|d| = 3.3e-6), noticed it, and rebuilt the set without 13428 and 13784 (|d| = 0.65). So r1 (+20.7) and r2 (+13.3) submitted, in effect, `</think>` amplification plus removal of a near-random direction; r1's controls fit this (`</think>` only and reversed Wait both 38.28% against 33.98% for the combination).
+- **hero3-s0-r4's notes misstate one test.** Its notes say request 3 was "wait −1 + think +2"; the code ran wait −2 alone. Every hero3 step-2 rollout read these notes, so the misstatement propagated.
+- **Tests without a paired standard error** (edited side only, original from cache): hero3-s1-r3 and hero3-s1-r5. Their select and confirm numbers above are not paired comparisons.

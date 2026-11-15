@@ -83,3 +83,10 @@ Different recipes, not one recipe at different strengths.
 - 8 rollouts per step, one update. Step 1 and step 2 also differ in prompt (web/library section and web tools removed).
 - Families and strengths were read by hand from final texts; attribution and difference-of-means counts come from regular expressions and are approximate.
 - nolib1 step 2 has no MATH-500 scores yet.
+
+
+## Corrections from an audit of all trajectories (2026-11-14)
+
+- nolib1-s0-r3's "random-direction control" re-tested the same α = 6 weights; no random direction was built (corrected in section 1 above).
+- Tests without a paired standard error (edited side only, original from cache): nolib1-s0-r5 (all its tests) and, in step 3, nolib1-s1-r6. Their numbers are not paired comparisons.
+- Reward is edited accuracy minus 7.42% on the reward set (256 answers) for every rollout, by construction (`rl/loop.py`, reward scoring).
