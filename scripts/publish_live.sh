@@ -23,7 +23,7 @@ p = sys.argv[2]; s = open(p).read()
 s = re.sub(r'(<script id="index" type="application/json">)(.*?)(</script>)', lambda m: m.group(1) + new + m.group(3), s, flags=re.S)
 open(p, "w").write(s)
 PY
-  mkdir -p posts/weight-edits/run && (cd "$REPO" && python3 viewer/run_status.py "$LIVE/posts/weight-edits/run/index.html" ${RUNS:-$EXP} >/dev/null)
+  mkdir -p posts/weight-edits/run && (cd "$REPO" && python3 viewer/run_status.py "$LIVE/posts/weight-edits/run" ${RUNS:-$EXP} >/dev/null)
   # Commit the run page and trajectory data to the site's main, so a publish by anyone else includes them.
   git add posts/weight-edits/run posts/weight-edits/traces
   if ! git diff --cached --quiet; then

@@ -1,11 +1,12 @@
-"""Write the live status page for the RL runs: a combined step table across runs, then each run's latest step.
+"""Write the run pages: <out_dir>/index.html links to one page per run, <out_dir>/<run>/index.html.
 
-    python3 viewer/run_status.py out.html hero3 nolib1:hero3@1
-An argument `name:parent@k` marks a run branched from `parent` after its step k: its first step is shown as step k + 1.
+    python3 viewer/run_status.py <out_dir> hero3 nolib1:hero3@1
+An argument `name:parent@k` marks a run branched from `parent` after its step k. Its page lists the parent's steps
+1 to k (marked as shared) and then its own steps, numbered from k + 1.
 """
 import glob, html, json, os, sys, time
 
-out, specs = sys.argv[1], sys.argv[2:]
+out_dir, specs = sys.argv[1], sys.argv[2:]
 e = lambda x: html.escape(str(x))
 sgn = lambda v: "" if v is None else f"{v * 100:+.1f}"
 NOTES = {"hero3": "with the shared notes library and web tools",
@@ -49,73 +50,73 @@ for spec in specs:
     runs.append(dict(name=name, parent=par or None, offset=int(k or 0), d=d, cfg=cfg, test=test,
                      done=[s for s in steps if s.get("event") == "step"], ended=any(s.get("event") in ("done", "stopped") for s in steps)))
 
+byname = {r["name"]: r for r in runs}
 cfg0 = runs[0]["cfg"]
-parts = ["<h1>Live RL runs</h1>",
-         f"<div class='meta'>Updated {time.strftime('%H:%M %Z, %d %b %Y')}. Inkling 2 Small learns to edit Qwen3.5-0.8B. "
-         "<a href='../'>map of the edits</a> · <a href='../traces/'>trajectories</a> · <a href='../changelog/'>changelog</a></div>",
-         f"<p>Each step: {cfg0['group_size']} rollouts from the current checkpoint, {cfg0['forward_budget']} forward passes and {cfg0['rollout_minutes']} minutes each, "
+STAMP = time.strftime('%H:%M %Z, %d %b %Y')
+INTRO = (f"<p>Each step: {cfg0['group_size']} rollouts from the current checkpoint, {cfg0['forward_budget']} forward passes and {cfg0['rollout_minutes']} minutes each, "
          "then one training update. Reward: accuracy of the submitted edit minus the original weights' 7.4%, on 256 hidden answers (the reward set), in points. "
-         "Test: the same edit on MATH-500 (original 6.6%), which training never uses.</p>"]
+         "Test: the same edit on MATH-500 (original 6.6%), which training never uses.</p>")
+HEAD = "<div class='tw'><table><tr><th>Step</th><th>Mean reward</th><th>Rewards</th><th>Mean test</th><th>Test per rollout</th><th>Entropy</th><th>Note</th></tr>"
 
-# the runs and how they relate
-parts.append("<h2>Runs</h2><ul>")
-for r in runs:
-    rel = f"branched from {e(r['parent'])} after step {r['offset']}, so its first step is step {r['offset'] + 1}" if r["parent"] else "starts from the untrained model"
-    state = "stopped" if (r["ended"] or r["name"] == "hero3") else "running"
-    parts.append(f"<li><b>{e(r['name'])}</b>: {NOTES.get(r['name'], '')}; {rel}; {state}. "
-                 f"<a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(r['name'])}'>logs</a></li>")
-parts.append("</ul>")
 
-# step tables: steps shared by every run first, then each run's own steps
-def step_row(r, s, label):
-    n = s["step"] + 1 + r["offset"]
+def state_of(r):
+    return "stopped" if (r["ended"] or r["name"] == "hero3") else "running"
+
+
+def step_row(r, s, n, note):
     rids = [x["rid"] for x in s.get("rollouts", [])]
     tests = [r["test"][i]["paired"]["diff_pp"] for i in rids if i in r["test"] and r["test"][i].get("paired")]
     mt = f"{sum(tests) / len(tests):+.1f} ({len(tests)} edits)" if tests else "pending"
     tl = ", ".join(f"{r['test'][i]['paired']['diff_pp']:+.1f}" if i in r["test"] and r["test"][i].get("paired") else ("no edit" if i in r["test"] else "–") for i in rids)
     rw = s.get("rewards") or []
-    return (f"<tr><td>{n}</td><td>{label}</td><td>{sgn(s.get('mean_reward'))}</td><td>{', '.join(sgn(x) for x in rw)}</td>"
-            f"<td>{mt}</td><td>{tl if tests else ''}</td><td>{e(s.get('entropy', '–'))}</td></tr>")
+    return (f"<tr><td>{n}</td><td>{sgn(s.get('mean_reward'))}</td><td>{', '.join(sgn(x) for x in rw)}</td>"
+            f"<td>{mt}</td><td>{tl if tests else ''}</td><td>{e(s.get('entropy', '–'))}</td><td>{note}</td></tr>")
 
-HEAD = "<div class='tw'><table><tr><th>Step</th><th>Run</th><th>Mean reward</th><th>Rewards</th><th>Mean test</th><th>Test per rollout</th><th>Entropy</th></tr>"
-root = next((r for r in runs if not r["parent"]), None)
-shared_k = min([r["offset"] for r in runs if r["parent"]] or [0])
-if root and shared_k:
-    parts.append(f"<h2>Step{'s' if shared_k > 1 else ''} 1{'' if shared_k == 1 else f' to {shared_k}'}, shared by both runs</h2>")
-    parts.append(f"<p class='meta'>These steps ran once, in {e(root['name'])}. Its checkpoint after step {shared_k} is where the other run{'s' if len(runs) > 2 else ''} branched off.</p>" + HEAD)
-    for s in root["done"][:shared_k]:
-        parts.append(step_row(root, s, "shared"))
-    parts.append("</table></div>")
-for r in runs:
-    own = r["done"][shared_k:] if (r is root and shared_k) else r["done"]
-    first = (shared_k if r is root else r["offset"]) + 1
-    state = "stopped" if (r["ended"] or r["name"] == "hero3") else "running"
-    parts.append(f"<h2>{e(r['name'])}: steps from {first}, {NOTES.get(r['name'], '')} ({state})</h2>" + HEAD)
-    for s in own:
-        parts.append(step_row(r, s, e(r["name"])))
-    cur = len(r["done"])
-    if state == "running" and cur < r["cfg"]["steps"]:
-        parts.append(f"<tr><td>{cur + 1 + r['offset']}</td><td>{e(r['name'])}</td><td colspan='5'>in progress</td></tr>")
-    parts.append("</table></div>")
 
-# in-progress step of each running run
-for r in runs:
+def run_page(r):
+    rel = (f"Branched from <a href='../{e(r['parent'])}/'>{e(r['parent'])}</a> after step {r['offset']}: it starts from that step's checkpoint, "
+           f"so step{'s' if r['offset'] > 1 else ''} 1{'' if r['offset'] == 1 else f' to {r[chr(39) + 'offset' + chr(39)]}'} below {'are' if r['offset'] > 1 else 'is'} shared with {e(r['parent'])}."
+           if r["parent"] else "Starts from the untrained model.")
+    p = [f"<h1>RL run: {e(r['name'])}</h1>",
+         f"<div class='meta'>Updated {STAMP} · <a href='../'>all runs</a> · <a href='../../'>map of the edits</a> · <a href='../../traces/'>trajectories</a> · "
+         f"<a href='../../changelog/'>changelog</a> · <a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(r['name'])}'>logs</a></div>",
+         f"<p>{NOTES.get(r['name'], '').capitalize()}. {rel} State: {state_of(r)}.</p>", INTRO, "<h2>Steps</h2>", HEAD]
+    if r["parent"]:
+        par = byname.get(r["parent"])
+        for s in (par["done"][:r["offset"]] if par else []):
+            p.append(step_row(par, s, s["step"] + 1 + par["offset"], f"shared with {e(par['name'])}"))
+    for s in r["done"]:
+        p.append(step_row(r, s, s["step"] + 1 + r["offset"], ""))
     cur = len(r["done"])
-    if r["ended"] or r["name"] == "hero3" or cur >= r["cfg"]["steps"]:
-        continue
-    rr = rollout_rows(r["d"], r["name"], cur)
-    parts.append(f"<h2>{e(r['name'])}, step {cur + 1 + r['offset']}, in progress</h2>")
-    if not rr:
-        parts.append("<p>Rollouts are starting.</p>"); continue
-    parts.append("<div class='tw'><table><tr><th>Rollout</th><th>Turns</th><th>Minutes</th><th>Forward passes</th><th>Best paired test so far</th><th>State</th></tr>")
-    for x in rr:
-        best = f"{x['best'][0]:+.1f} ± {x['best'][1]}, {x['best'][2]} answers per side" if x["best"] else "–"
-        st = f"done: reward {sgn(x['done']['reward'])}, {e(x['done']['ended'])}" if x["done"] else "running"
-        if x["restarts"]:
-            st += f", target restarted {x['restarts']}×"
-        parts.append(f"<tr><td><a href='../traces/#rl-{e(x['rid'])}'>{x['n']}</a></td><td>{x['turns']}</td><td>{x['minutes']}</td>"
-                     f"<td>{x['fwd']} / {r['cfg']['forward_budget']}</td><td>{best}</td><td>{st}</td></tr>")
-    parts.append("</table></div><p class='meta'>A paired test runs the original and the edited weights on the same train problems. Tests on fewer than 64 answers are not shown.</p>")
+    if state_of(r) == "running" and cur < r["cfg"]["steps"]:
+        p.append(f"<tr><td>{cur + 1 + r['offset']}</td><td colspan='6'>in progress</td></tr>")
+        rr = rollout_rows(r["d"], r["name"], cur)
+        p.append("</table></div>")
+        p.append(f"<h2>Step {cur + 1 + r['offset']}, in progress</h2>")
+        if not rr:
+            p.append("<p>Rollouts are starting.</p>")
+        else:
+            p.append("<div class='tw'><table><tr><th>Rollout</th><th>Turns</th><th>Minutes</th><th>Forward passes</th><th>Best paired test so far</th><th>State</th></tr>")
+            for x in rr:
+                best = f"{x['best'][0]:+.1f} ± {x['best'][1]}, {x['best'][2]} answers per side" if x["best"] else "–"
+                st = f"done: reward {sgn(x['done']['reward'])}, {e(x['done']['ended'])}" if x["done"] else "running"
+                if x["restarts"]:
+                    st += f", target restarted {x['restarts']}×"
+                p.append(f"<tr><td><a href='../../traces/#rl-{e(x['rid'])}'>{x['n']}</a></td><td>{x['turns']}</td><td>{x['minutes']}</td>"
+                         f"<td>{x['fwd']} / {r['cfg']['forward_budget']}</td><td>{best}</td><td>{st}</td></tr>")
+            p.append("</table></div><p class='meta'>A paired test runs the original and the edited weights on the same train problems. Tests on fewer than 64 answers are not shown.</p>")
+    else:
+        p.append("</table></div>")
+    return p, "../../../"
+
+
+def index_page():
+    p = ["<h1>RL runs</h1><ul>"]
+    for r in runs:
+        p.append(f"<li><a href='{e(r['name'])}/'>{e(r['name'])}</a></li>")
+    p.append("</ul>")
+    return p, "../../"
+
 
 style = """:root { --ink:#1d1d1b; --muted:#5f5e5a; --line:#e4e3df; --bg:#fcfcfb; --th:#f0efec; --accent:#2a78d6; }
 html.dark { --ink:#e8e6e1; --muted:#9c9a92; --line:#2c2c2a; --bg:#151514; --th:#242422; --accent:#7fb2f0; color-scheme:dark; }
@@ -131,8 +132,15 @@ th, td { border:1px solid var(--line); padding:5px 9px; text-align:left; } th { 
 theme = """<script>(function () { try { let v = localStorage.getItem('quarto-color-scheme');
 if (v == null && window.matchMedia('(prefers-color-scheme: dark)').matches) v = 'alternate';
 if (v === 'alternate') document.documentElement.classList.add('dark'); } catch (e) {} })();</script>"""
-page = (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='600'><title>Live RL runs</title><style>{style}</style>{theme}</head><body>"
-        f"<header class='topbar'><a class='brand' href='../../../'>Tinkerings</a></header><main>{''.join(parts)}</main></body></html>\n")
-open(out, "w").write(page)
-print("wrote", out)
+def write(path, parts, brand):
+    page = (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<meta http-equiv='refresh' content='600'><title>RL runs</title><style>{style}</style>{theme}</head><body>"
+            f"<header class='topbar'><a class='brand' href='{brand}'>Tinkerings</a></header><main>{''.join(parts)}</main></body></html>\n")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").write(page)
+
+
+write(os.path.join(out_dir, "index.html"), *index_page())
+for r in runs:
+    write(os.path.join(out_dir, r["name"], "index.html"), *run_page(r))
+print("wrote", out_dir, [r["name"] for r in runs])
