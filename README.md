@@ -21,23 +21,13 @@ Every edit tried so far, sorted by kind: [a map of weight edits](https://tinkeri
 
 Qwen3.5-0.8B fails at math in one way: it writes "Wait..." and rechecks until it runs out of tokens. Every gain above comes from stopping that. Transcripts and scores are in `results/searches/`.
 
-### RL runs
+### Evaluation (15 November 2026)
 
-Inkling 2 Small trained with RL as the editor: 8 rollouts per step, 32 forward passes each. Reward: accuracy gain of the submitted edit on the reward set. Test: the same edit on MATH-500. Points are percentage points.
+Full tables: [`results/eval/SUMMARY.md`](results/eval/SUMMARY.md). Held-out sets only; small samples (2 to 4 editing sessions per editor), so a proof of concept.
 
-| Step | Run | Mean reward | Mean test |
-|---|---|---|---|
-| 1, untrained | shared | +13.6 | +15.5 |
-| 2 | `hero3`, with shared notes | +24.3 | +24.3 |
-| 2 | `nolib1`, no notes | +13.5 | +13.5 |
-| 3 | `nolib1` | +18.7 | |
-
-- The best single edits beat Opus: +32.8 on MATH-500 (39.4%), against +27.2.
-- `hero3`'s step-2 gain came with the notes: every rollout copied step 1's best recipe ([analysis](results/rl/hero3/analysis_step1_vs_step2.md)).
-- Without notes, training did not move the mean ([analysis](results/rl/nolib1/analysis_step2.md)). An update check found the first update changed the editor by about 0.0006 nats per token: the learning rate (2e-5) was about 10× too low for LoRA ([update check](results/rl/hero3/update_check.md)).
-- Next (14 November 2026, night): `rebase2` and `rebase1` resume from `nolib1`'s step-3 checkpoint with learning rate 2e-4 and move the starting model to the best edit so far, every 2 steps and every step. See [CHANGELOG.md](CHANGELOG.md).
-
-Live: [run pages](https://tinkerings.dev/posts/weight-space-programming/run/).
+- **The edited model gets much better, and it transfers.** Qwen3.5-0.8B with the editor's best edits stacked: MATH-500 6.6% → 42.5%, GSM8K test 12% → 58%, NuminaMath (new dataset) 8.2% → 44.6%. Nearly every change is wrong→right.
+- **RL has not yet made the editor better.** Untrained vs trained editor on the same model: 0.8B MATH-500 +11.8 vs +13.9 (mean gain per edit); Qwen3.5-2B +19.3 vs +7.8; NuminaMath +16.1 vs −0.6. The RL updates did move the editor toward its higher-reward sessions (correlation 0.86 to 0.97 between each session's change in likelihood and its advantage), but after a handful of updates that does not show on held-out data.
+- **One edit is most of the gain.** The best single edit from the untrained editor already reaches 39.4% on MATH-500 and 59.8% on GSM8K test.
 
 ## How it works
 
