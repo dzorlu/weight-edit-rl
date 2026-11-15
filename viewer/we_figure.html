@@ -11,10 +11,10 @@
     <div class="we-block"><div class="we-cap"><code>x</code> [4]</div><div class="we-sum" id="we-X"></div></div>
     <div class="we-op">*</div>
     <div class="we-block"><div class="we-cap"><code>W</code> after the edit [4 × 3]</div><div class="we-grid" id="we-W"></div></div>
-    <div class="we-op">→</div>
-    <div class="we-block"><div class="we-cap"><code>x * W</code> [4 × 3]</div><div class="we-grid" id="we-C"></div></div>
-    <div class="we-op">· <code>u</code><br>→</div>
-    <div class="we-block"><div class="we-cap">unit total</div><div class="we-sum" id="we-S"></div></div>
+    <div class="we-op">* <code>u</code><br>→</div>
+    <div class="we-block"><div class="we-cap">contribution: <code>x * W * u</code> [4 × 3]</div><div class="we-grid" id="we-C"></div></div>
+    <div class="we-op">sum<br>row<br>→</div>
+    <div class="we-block"><div class="we-cap">unit [4]</div><div class="we-sum" id="we-S"></div></div>
   </div>
   <div class="we-total" id="we-total"></div>
 </div>
@@ -56,8 +56,8 @@
   const total0 = W0.reduce((a, r, j) => a + x[j] * r.reduce((b, v, d) => b + v * u[d], 0), 0);
   function show(k) {
     const W = edits[k].f(W0);
-    const C = W.map((r, j) => r.map(v => x[j] * v));
-    const S = C.map(r => r.reduce((a, v, d) => a + v * u[d], 0)), tot = S.reduce((a, b) => a + b, 0);
+    const C = W.map((r, j) => r.map((v, d) => x[j] * v * u[d]));
+    const S = C.map(r => r.reduce((a, b) => a + b, 0)), tot = S.reduce((a, b) => a + b, 0);
     W.forEach((r, j) => r.forEach((v, d) => {
       const i = j * 3 + d, ch = Math.abs(v - W0[j][d]) > 1e-9;
       cW[i].textContent = fmt(v); cW[i].style.background = tint(v, 2); cW[i].classList.toggle('chg', ch);
