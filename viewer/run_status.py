@@ -10,7 +10,9 @@ out_dir, specs = sys.argv[1], sys.argv[2:]
 e = lambda x: html.escape(str(x))
 sgn = lambda v: "" if v is None else f"{v * 100:+.1f}"
 NOTES = {"hero3": "with the shared notes library and web tools",
-         "nolib1": "no notes library, no web tools"}
+         "nolib1": "no notes library, no web tools",
+         "rebase2": "No notes, no web tools, learning rate 2e-4; the starting model is updated to the best edit so far every 2 steps.",
+         "rebase1": "No notes, no web tools, learning rate 2e-4; the starting model is updated to the best edit so far every step."}
 
 
 def load(exp):
@@ -155,14 +157,22 @@ def live_rows(r, step):
     return rows
 
 
+def ancestor_steps(r):
+    """The steps a run inherits: its parent's steps up to the branch point, including what the parent inherited."""
+    if not r["parent"] or r["parent"] not in byname:
+        return []
+    par = byname[r["parent"]]
+    out = [(o, s) for o, s in ancestor_steps(par) if s["step"] + 1 + o["offset"] <= r["offset"]]
+    out += [(par, s) for s in par["done"] if s["step"] + 1 + par["offset"] <= r["offset"]]
+    return out
+
+
 def run_page(r):
-    head = (f"Branched from {e(r['parent'])} after step {r['offset']}; step 1 is shared with {e(r['parent'])}. No notes library, no web tools."
+    head = (f"Branched from {e(r['parent'])} after step {r['offset']}; steps 1 to {r['offset']} are shared. {NOTES.get(r['name'], '')}"
             if r["parent"] else "With the shared notes library and web tools.")
     p = [f"<h1>{e(r['name'])}</h1><div class='meta'>{head} Updated {STAMP} · <a href='../'>all runs</a></div>"]
-    if r["parent"]:
-        par = byname.get(r["parent"])
-        for s in (par["done"][:r["offset"]] if par else []):
-            p += step_table(par, s.get("rollouts", []), f"Step {s['step'] + 1 + par['offset']}")
+    for owner, s in ancestor_steps(r):
+        p += step_table(owner, s.get("rollouts", []), f"Step {s['step'] + 1 + owner['offset']} (shared with {e(owner['name'])})")
     for s in r["done"]:
         p += step_table(r, s.get("rollouts", []), f"Step {s['step'] + 1 + r['offset']}")
     cur = len(r["done"])
