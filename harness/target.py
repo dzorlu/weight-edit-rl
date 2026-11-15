@@ -2,6 +2,7 @@
 
 - `Target` (one L40S per search or rollout): a Python sandbox over the weight files, the forward tool
   (generation and teacher-forced passes), a reward method, and a snapshot of the work folder.
+- `PackedTarget`: the same tools for two rollouts on one L40S (each method takes the rollout id first).
 - `heldout_eval`: MATH-500, original weights against the submitted edit, paired by problem.
 - `prep`: downloads the target and builds the practice and held-out sets.
 - `paper_edit`: writes the published Math edit of arXiv 2611.09382 as a control.
@@ -168,9 +169,10 @@ def summarize(rows, cap):
 
 
 # ----------------------------------------------------------------------------- vLLM helper
-def start_vllm(model, name, port, util, max_len, extra=()):
+def start_vllm(model, name, port, util, max_len, extra=(), log=None):
     import subprocess, time, urllib.request
-    log = open(f"/tmp/vllm_{name}.log", "w")
+    logf = log or f"/tmp/vllm_{name}.log"
+    log = open(logf, "w")
     proc = subprocess.Popen(
         ["vllm", "serve", model, "--served-model-name", name, "--port", str(port), "--host", "127.0.0.1",
          "--max-model-len", str(max_len), "--gpu-memory-utilization", str(util),
@@ -179,7 +181,7 @@ def start_vllm(model, name, port, util, max_len, extra=()):
     t0 = time.time()
     while True:
         if proc.poll() is not None:
-            tail = open(f"/tmp/vllm_{name}.log").read()[-3000:]
+            tail = open(logf).read()[-3000:]
             raise RuntimeError(f"vllm {name} exited with code {proc.returncode}\n{tail}")
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
@@ -213,6 +215,45 @@ def chat(port, name, messages, max_tokens, seed=None, timeout=3000, **kw):
 def target_dir():
     from huggingface_hub import snapshot_download
     return snapshot_download(TARGET, local_files_only=True)
+
+
+BASES_W, BASES_R = "/weights/bases", "/runs/data/bases"  # starting models made by rebasing: weights, and their practice folder and caches
+
+
+def base_dirs(tag=""):
+    """(model dir, practice dir) of a starting model; tag "" is the downloaded Qwen3.5-0.8B."""
+    if not tag:
+        return target_dir(), "/runs/data/math_practice"
+    return f"{BASES_W}/{tag}", f"{BASES_R}/{tag}/practice"
+
+
+def heldout_cache(tag=""):
+    """The starting model's answers on the test set, generated once (2 per problem, same seeds as heldout_eval)."""
+    return f"{BASES_R}/{tag}/heldout_original.jsonl" if tag else "/runs/heldout_original_cached.jsonl"
+
+
+def heldout_rows(port, name, items, n):
+    """Answers to MATH-500 problems, as heldout_eval generates them (seeded by problem and sample)."""
+    import concurrent.futures as cf, zlib
+    jobs = [(it, s) for it in items for s in range(n)]
+
+    def one(job):
+        it, s = job
+        seed = zlib.crc32(f"heldout|{it['qid']}|{s}".encode()) & 0x7FFFFFFF
+        try:
+            r = chat(port, name, [{"role": "user", "content": it["problem"] + "\n\nPut your final answer in \\boxed{}."}], GEN_CAP, seed=seed,
+                     temperature=0.6, top_p=0.95, top_k=20, presence_penalty=1.5, chat_template_kwargs={"enable_thinking": True})
+            ch = r["choices"][0]
+            rs = ch["message"].get("reasoning_content") or ch["message"].get("reasoning") or ""
+            text = (("<think>" + rs + "</think>") if rs else "") + (ch["message"].get("content") or "")
+            fin, toks = ch["finish_reason"], r["usage"]["completion_tokens"]
+        except Exception as e:
+            text, fin, toks = f"[request failed: {repr(e)[:200]}]", "error", 0
+        ext, ok = grade_math(text, it["answer"])
+        return {"qid": it["qid"], "sample": s, "source": "math500", "text": text, "extracted": ext, "correct": ok, "tokens": toks, "finish": fin}
+
+    with cf.ThreadPoolExecutor(256) as ex:
+        return list(ex.map(one, jobs))
 
 
 # ----------------------------------------------------------------------------- prep
@@ -339,69 +380,102 @@ for line in sys.stdin:
 
 
 # ----------------------------------------------------------------------------- Target
-@app.cls(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, block_network=True,
-         timeout=150 * 60, scaledown_window=20 * 60, max_containers=1, memory=98304, cpu=8)
-class Target:
-    rid: str = modal.parameter(default="")  # one container per value, so each rollout gets its own target
+SLOTS = "/slots"  # PackedTarget: one folder per rollout, hidden from every kernel
+PACK_UTIL = {"edited": 0.30, "original": 0.15, "forward_model": 0.13}  # PackedTarget: GPU share of each rollout's edited vLLM server, the shared original server, the teacher-forced model
+KERNEL_MEM = 36 * 2 ** 30  # PackedTarget: address-space limit of each python kernel, so one rollout cannot take the container's memory from the other
 
-    @modal.enter()
-    def boot(self):
-        import os, json, torch
-        self.mdir = target_dir()
+
+class _Slot:
+    """One rollout's state: its /work and /library, its python kernel, its edited vLLM server, its restart id."""
+
+    def __init__(self, work, lib, port, ckpt, isolate=False):
+        import threading, uuid
+        self.work, self.lib, self.port, self.ckpt, self.isolate = work, lib, port, ckpt, isolate
+        self.kernel, self.k = None, 0
+        self.edited_proc, self.edited_hash = None, None
+        self.boot = uuid.uuid4().hex  # changes if the container is replaced, which resets /work
+        self.lock = threading.RLock()
+
+    def real(self, path):
+        """The container path of a path as the editor sees it: /work and /library belong to the rollout."""
+        for v, r in (("/work", self.work), ("/library", self.lib)):
+            if path == v or path.startswith(v + "/"):
+                return r + path[len(v):]
+        return path
+
+
+class _Core:
+    """The tools of one rollout (a `_Slot`) on a container that holds the original weights."""
+    edited_util = 0.40
+    original_util = 0.40
+    tf_tokens = 40000  # tokens per batch of a teacher-forced pass
+
+    def _setup(self):
+        import os, json, glob, threading
+        # `base` (a modal.parameter on the classes) names a starting model made by rl.loop's rebasing: earlier edits
+        # applied to the weights, with its own cached original answers. "" is the downloaded Qwen3.5-0.8B.
+        self.mdir, self.pdir = base_dirs(getattr(self, "base", ""))
         os.makedirs("/work", exist_ok=True)
-        for link, dst in [("/model", self.mdir), ("/practice", "/runs/data/math_practice")]:
+        for link, dst in [("/model", self.mdir), ("/practice", self.pdir)]:
             if not os.path.exists(link):
                 os.symlink(dst, link)
         open("/tmp/kernel_child.py", "w").write(KERNEL_SRC)
-        self.kernel = None
-        self._start_kernel()
+        self.gpu_lock = threading.Lock()  # vLLM start-ups and teacher-forced passes: one at a time
+        self.commit_lock = threading.Lock()
+        self.orig_lock = threading.Lock()
+        self.orig = None
         self.practice = {}
-        for line in open("/runs/data/math_practice/problems.jsonl"):
+        for line in open(f"{self.pdir}/problems.jsonl"):
             r = json.loads(line)
             self.practice[r["id"]] = r
-        self.orig = start_vllm(self.mdir, "original", 8001, 0.40, GEN_CAP + 3000)
-        self.edited_proc, self.edited_hash = None, None
+        # Answers of the original weights that were generated before (same prompt, seed and token cap): served instead of regenerated.
+        self.ocache = {}
+        for f in glob.glob(f"{self.pdir}/original/*.jsonl") + glob.glob(f"{self.pdir}/baseline/original.jsonl"):
+            for line in open(f):
+                r = json.loads(line)
+                self.ocache[(r["qid"], r["sample"])] = r
+
+    def _load_hf(self):
+        import torch
         from transformers import AutoTokenizer, AutoModelForImageTextToText
         self.tok = AutoTokenizer.from_pretrained(self.mdir)
         self.hf = AutoModelForImageTextToText.from_pretrained(self.mdir, dtype=torch.bfloat16).to("cuda").eval()
         self.sd_keys = set(self.hf.state_dict().keys())
         self.hf_state = "original"
         self.hf_backup = {}
-        self.k = 0
-        import uuid
-        self.boot = uuid.uuid4().hex  # changes if the container is replaced, which resets /work
-        # Answers of the original weights that were generated before (same prompt, seed and token cap): served instead of regenerated.
-        self.ocache = {}
-        import glob
-        for f in glob.glob("/runs/data/math_practice/original/*.jsonl") + glob.glob("/runs/data/math_practice/baseline/original.jsonl"):
-            for line in open(f):
-                r = json.loads(line)
-                self.ocache[(r["qid"], r["sample"])] = r
-        print("BOOT ok; tensors", len(self.sd_keys))
 
-    def _start_kernel(self):
+    def _ensure_original(self):
+        with self.orig_lock:
+            if self.orig is None:
+                with self.gpu_lock:
+                    self.orig = start_vllm(self.mdir, "original", 8001, self.original_util, GEN_CAP + 3000)
+
+    def _start_kernel(self, s):
         import subprocess, sys
-        if self.kernel is not None:
-            self.kernel.kill()
-        self.kernel = subprocess.Popen([sys.executable, "-u", "/tmp/kernel_child.py", "/model", "/work"],
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
-        assert self.kernel.stdout.readline().strip() == "READY"
+        if s.kernel is not None:
+            s.kernel.kill()
+        cmd = [sys.executable, "-u", "/tmp/kernel_child.py", "/model", "/work"]
+        if s.isolate:  # own mount and pid namespace: its /work and /library are the rollout's folders, and /slots is empty
+            setup = f"mount --bind {s.work} /work && mount --bind {s.lib} /library && mount -t tmpfs none {SLOTS} && ulimit -v {KERNEL_MEM // 1024}"
+            cmd = ["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--kill-child", "--mount-proc",
+                   "sh", "-c", setup + ' && exec "$@"', "sh", *cmd]
+        s.kernel = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        assert s.kernel.stdout.readline().strip() == "READY"
 
-    @modal.method()
-    def py(self, code: str) -> str:
+    def _py(self, s, code):
         import json, threading
         res = {}
 
         def rd():
             try:
-                self.kernel.stdin.write(json.dumps({"code": code}) + "\n"); self.kernel.stdin.flush()
-                res["line"] = self.kernel.stdout.readline()
+                s.kernel.stdin.write(json.dumps({"code": code}) + "\n"); s.kernel.stdin.flush()
+                res["line"] = s.kernel.stdout.readline()
             except Exception as e:
                 res["err"] = repr(e)
 
         th = threading.Thread(target=rd, daemon=True); th.start(); th.join(900)
         if th.is_alive() or not res.get("line"):
-            self._start_kernel()
+            self._start_kernel(s)
             return "[kernel restarted: the code exceeded 900 seconds or the memory limit, or the kernel crashed. All variables are lost. Files in /work remain.]"
         out = json.loads(res["line"])["out"]
         if len(out) > 10000:
@@ -409,10 +483,10 @@ class Target:
         return out if out.strip() else "[no output]"
 
     # ---- edits
-    def _edits(self):
+    def _edits(self, s):
         import os, hashlib
         from safetensors.torch import load_file
-        d, out, h = "/work/edited", {}, hashlib.sha256()
+        d, out, h = s.real("/work/edited"), {}, hashlib.sha256()
         if os.path.isdir(d):
             for f in sorted(os.listdir(d)):
                 if f.endswith(".safetensors"):
@@ -421,16 +495,15 @@ class Target:
                     h.update(name.encode()); h.update(out[name].float().numpy().tobytes())
         return out, (h.hexdigest() if out else None)
 
-    def _ensure_edited_server(self):
+    def _ensure_edited_server(self, s):
         import os, shutil
         from safetensors.torch import load_file, save_file
-        edits, hsh = self._edits()
+        edits, hsh = self._edits(s)
         if hsh is None:
             return None
-        if hsh == self.edited_hash and self.edited_proc is not None and self.edited_proc.poll() is None:
+        if hsh == s.edited_hash and s.edited_proc is not None and s.edited_proc.poll() is None:
             return hsh
-        stop_proc(self.edited_proc)
-        ed = "/tmp/edited_ckpt"
+        ed = s.ckpt
         shutil.rmtree(ed, ignore_errors=True); os.makedirs(ed)
         for f in os.listdir(self.mdir):
             src = os.path.join(self.mdir, f)
@@ -442,18 +515,19 @@ class Target:
                 save_file(sd, os.path.join(ed, f), metadata={"format": "pt"})
             else:
                 shutil.copy(os.path.realpath(src), os.path.join(ed, f))
-        self.edited_proc = start_vllm(ed, "edited", 8002, 0.40, GEN_CAP + 3000)
-        self.edited_hash = hsh
+        with self.gpu_lock:
+            stop_proc(s.edited_proc)
+            s.edited_proc = start_vllm(ed, "edited", s.port, self.edited_util, GEN_CAP + 3000, log=f"/tmp/vllm_edited_{s.port}.log" if s.isolate else None)
+        s.edited_hash = hsh
         return hsh
 
-    def _set_hf(self, which):
-        import torch
+    def _set_hf(self, which, s):
         sd = self.hf.state_dict()
         for n, t in self.hf_backup.items():
             sd[n].copy_(t)
         self.hf_backup = {}
         if which == "edited":
-            edits, _ = self._edits()
+            edits, _ = self._edits(s)
             for n, t in edits.items():
                 if n not in sd:
                     raise ValueError(f"edited tensor {n} not found in the forward model")
@@ -489,7 +563,7 @@ class Target:
         with cf.ThreadPoolExecutor(min(len(jobs), 256)) as ex:
             return list(ex.map(one, jobs))
 
-    def _generate(self, req):
+    def _generate(self, req, s):
         import json
         which = req.get("model", "original")
         if which not in ("original", "edited", "both"):
@@ -512,14 +586,14 @@ class Target:
         lim = 256 if which == "both" else 512
         if len(items) * n > lim:
             return False, f"items x n = {len(items) * n} exceeds {lim}"
-        if which in ("edited", "both") and self._edits()[1] is None:
+        if which in ("edited", "both") and self._edits(s)[1] is None:
             return False, "there are no edits; use model 'original' or save an edit first"
-        k = self.k + 1
+        k = s.k + 1
         out = {"request": k, "type": "generate", "max_tokens": max_tokens}
         rows_o = rows_e = None
         if which in ("edited", "both"):
             try:
-                self._ensure_edited_server()
+                self._ensure_edited_server(s)
             except Exception as e:
                 return False, "the edited weights could not be loaded for generation: " + repr(e)[-600:]
         if which in ("original", "both"):
@@ -528,25 +602,26 @@ class Target:
                 rows_o = [dict(r) for r in hit]
                 out["original_from_cache"] = True
             else:
+                self._ensure_original()
                 rows_o = self._gen("original", 8001, items, n, max_tokens)
         if which in ("edited", "both"):
-            rows_e = self._gen("edited", 8002, items, n, max_tokens)
+            rows_e = self._gen("edited", s.port, items, n, max_tokens)
         for tag, rows in (("original", rows_o), ("edited", rows_e)):
             if rows is None:
                 continue
             fn = f"/work/gen_{k}.jsonl" if which != "both" else f"/work/gen_{k}_{tag}.jsonl"
-            with open(fn, "w") as f:
+            with open(s.real(fn), "w") as f:
                 for r in rows:
                     f.write(json.dumps(r) + "\n")
             out[tag] = dict(summarize(rows, max_tokens), file=fn)
         if which == "both" and any(r["correct"] is not None for r in rows_o):
             go = [r for r in rows_o if r["correct"] is not None]; ge = [r for r in rows_e if r["correct"] is not None]
             out["paired_edited_minus_original"] = paired_stats(go, ge)
-        self.k = k
+        s.k = k
         return True, json.dumps(out, indent=1)
 
     # ---- teacher forcing
-    def _teacher_forced(self, req):
+    def _teacher_forced(self, req, s):
         import json, os, numpy as np, torch
         which = req.get("model", "original")
         if which not in ("original", "edited"):
@@ -582,78 +657,95 @@ class Target:
             return False, f"requested activations would take {est / 2 ** 30:.1f} GiB; the limit is 3 GiB per request. Ask for fewer texts, layers or shorter texts."
         if ret.get("attn_layers"):
             return False, "attention maps are not available in this setup"
-        if which == "edited" and self._edits()[1] is None:
+        if which == "edited" and self._edits(s)[1] is None:
             return False, "there are no edits; use model 'original' or save an edit first"
-        try:
-            self._set_hf(which)
-        except Exception as e:
-            return False, repr(e)[:600]
-        k = self.k + 1
+        mods = dict(self.hf.named_modules())
+        mlp_mods = {}
+        for l in mlp_layers:
+            name = [n for n in mods if n.endswith(f"layers.{l}.mlp.down_proj") and "vis" not in n.lower()]
+            if len(name) != 1:
+                return False, f"could not locate the MLP down projection of layer {l}"
+            mlp_mods[l] = mods[name[0]]
+        k = s.k + 1
         d = f"/work/fwd_{k}"
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(s.real(d), exist_ok=True)
         N = len(texts)
         lp = np.full((N, L), np.nan, dtype=np.float32)
         tk_i = np.zeros((N, L, topk), dtype=np.int32) if topk else None
         tk_l = np.zeros((N, L, topk), dtype=np.float32) if topk else None
         hs = {l: np.zeros((N, L, H), dtype=np.float16) for l in hs_layers}
         ml = {l: np.zeros((N, L, M), dtype=np.float16) for l in mlp_layers}
-        cap, hooks = {}, []
-        mods = dict(self.hf.named_modules())
-        for l in mlp_layers:
-            name = [n for n in mods if n.endswith(f"layers.{l}.mlp.down_proj") and "vis" not in n.lower()]
-            if len(name) != 1:
-                return False, f"could not locate the MLP down projection of layer {l}"
-            hooks.append(mods[name[0]].register_forward_hook(lambda m, i, o, l=l: cap.__setitem__(l, i[0].detach())))
+        cap, hooks, oom = {}, [], False
         order = sorted(range(N), key=lambda i: -len(ids[i]))
-        bs = max(1, min(32, 40000 // max(L, 1)))
-        try:
-            with torch.no_grad():
-                for s in range(0, N, bs):
-                    idx = order[s:s + bs]
-                    Lb = max(len(ids[i]) for i in idx)
-                    x = torch.full((len(idx), Lb), self.tok.pad_token_id or 0, dtype=torch.long)
-                    am = torch.zeros((len(idx), Lb), dtype=torch.long)
-                    for r, i in enumerate(idx):
-                        x[r, :len(ids[i])] = torch.tensor(ids[i]); am[r, :len(ids[i])] = 1
-                    o = self.hf(input_ids=x.cuda(), attention_mask=am.cuda(), output_hidden_states=bool(hs_layers))
-                    logp = torch.log_softmax(o.logits.float(), -1)
-                    for r, i in enumerate(idx):
-                        n_i = len(ids[i])
-                        if n_i > 1:
-                            tgt = torch.tensor(ids[i][1:]).cuda()
-                            lp[i, 1:n_i] = logp[r, :n_i - 1].gather(-1, tgt[:, None])[:, 0].cpu().numpy()
-                        if topk:
-                            v, ix = logp[r, :n_i].topk(topk, -1)
-                            tk_i[i, :n_i] = ix.cpu().numpy(); tk_l[i, :n_i] = v.cpu().numpy()
-                        for l in hs_layers:
-                            hs[l][i, :n_i] = o.hidden_states[l][r, :n_i].float().cpu().numpy().astype(np.float16)
-                        for l in mlp_layers:
-                            ml[l][i, :n_i] = cap[l][r, :n_i].float().cpu().numpy().astype(np.float16)
-                    del o, logp
-        finally:
-            for h in hooks:
-                h.remove()
-            self._set_hf("original")
-            torch.cuda.empty_cache()
+        bs = max(1, min(32, self.tf_tokens // max(L, 1)))
+        with self.gpu_lock:  # the forward model is shared: its weights and hooks belong to one request at a time
+            try:
+                self._set_hf(which, s)
+            except Exception as e:
+                self._set_hf("original", s)
+                return False, repr(e)[:600]
+            for l, m in mlp_mods.items():
+                hooks.append(m.register_forward_hook(lambda m, i, o, l=l: cap.__setitem__(l, i[0].detach())))
+            try:
+                with torch.no_grad():
+                    for b0 in range(0, N, bs):
+                        idx = order[b0:b0 + bs]
+                        Lb = max(len(ids[i]) for i in idx)
+                        x = torch.full((len(idx), Lb), self.tok.pad_token_id or 0, dtype=torch.long)
+                        am = torch.zeros((len(idx), Lb), dtype=torch.long)
+                        for r, i in enumerate(idx):
+                            x[r, :len(ids[i])] = torch.tensor(ids[i]); am[r, :len(ids[i])] = 1
+                        # The language model, then the output head on 1,024 positions at a time: full-vocabulary
+                        # log-probabilities of a whole batch at once take tens of GB.
+                        o = self.hf.model(input_ids=x.cuda(), attention_mask=am.cuda(), output_hidden_states=bool(hs_layers))
+                        for r, i in enumerate(idx):
+                            n_i = len(ids[i])
+                            for c0 in range(0, n_i, 1024):
+                                c1 = min(n_i, c0 + 1024)
+                                logp = torch.log_softmax(self.hf.lm_head(o.last_hidden_state[r, c0:c1]).float(), -1)
+                                j1 = min(c1, n_i - 1)  # position j predicts token j + 1
+                                if j1 > c0:
+                                    tgt = torch.tensor(ids[i][c0 + 1:j1 + 1]).cuda()
+                                    lp[i, c0 + 1:j1 + 1] = logp[:j1 - c0].gather(-1, tgt[:, None])[:, 0].cpu().numpy()
+                                if topk:
+                                    v, ix = logp.topk(topk, -1)
+                                    tk_i[i, c0:c1] = ix.cpu().numpy(); tk_l[i, c0:c1] = v.cpu().numpy()
+                                del logp
+                            for l in hs_layers:
+                                hs[l][i, :n_i] = o.hidden_states[l][r, :n_i].float().cpu().numpy().astype(np.float16)
+                            for l in mlp_layers:
+                                ml[l][i, :n_i] = cap[l][r, :n_i].float().cpu().numpy().astype(np.float16)
+                        del o
+            except torch.cuda.OutOfMemoryError:
+                oom = True
+            finally:
+                for h in hooks:
+                    h.remove()
+                cap.clear()
+                self._set_hf("original", s)
+                torch.cuda.empty_cache()
+        if oom:
+            return False, ("the teacher-forced pass ran out of GPU memory (it does not count). Ask for fewer or shorter texts, "
+                           "or fewer hidden_states / mlp_act layers per request.")
+        dr = s.real(d)
         files = {}
         if ret.get("token_logprobs", True):
-            np.save(f"{d}/token_logprobs.npy", lp); files["token_logprobs.npy"] = "[text, position] log-probability of the token at that position given the tokens before it (NaN at position 0 and in padding)"
+            np.save(f"{dr}/token_logprobs.npy", lp); files["token_logprobs.npy"] = "[text, position] log-probability of the token at that position given the tokens before it (NaN at position 0 and in padding)"
         if topk:
-            np.save(f"{d}/topk_ids.npy", tk_i); np.save(f"{d}/topk_logprobs.npy", tk_l)
+            np.save(f"{dr}/topk_ids.npy", tk_i); np.save(f"{dr}/topk_logprobs.npy", tk_l)
             files["topk_ids.npy / topk_logprobs.npy"] = "[text, position, k] top-k next-token predictions made at that position"
         for l in hs_layers:
-            np.save(f"{d}/hidden_L{l}.npy", hs[l]); files[f"hidden_L{l}.npy"] = "[text, position, hidden] residual stream (0 = embeddings, l = after layer l), float16"
+            np.save(f"{dr}/hidden_L{l}.npy", hs[l]); files[f"hidden_L{l}.npy"] = "[text, position, hidden] residual stream (0 = embeddings, l = after layer l), float16"
         for l in mlp_layers:
-            np.save(f"{d}/mlp_act_L{l}.npy", ml[l]); files[f"mlp_act_L{l}.npy"] = "[text, position, intermediate] input to the layer's mlp.down_proj, float16"
-        json.dump({"model": which, "lengths": [len(x) for x in ids], "token_ids": ids, "files": files}, open(f"{d}/meta.json", "w"))
-        self.k = k
+            np.save(f"{dr}/mlp_act_L{l}.npy", ml[l]); files[f"mlp_act_L{l}.npy"] = "[text, position, intermediate] input to the layer's mlp.down_proj, float16"
+        json.dump({"model": which, "lengths": [len(x) for x in ids], "token_ids": ids, "files": files}, open(f"{dr}/meta.json", "w"))
+        s.k = k
         mean_lp = [float(np.nanmean(lp[i, :len(ids[i])])) if len(ids[i]) > 1 else None for i in range(N)]
         return True, json.dumps({"request": k, "type": "teacher_forced", "model": which, "texts": N, "max_tokens_in_a_text": L, "dir": d,
                                  "files": files, "mean_token_logprob_first_texts": [round(x, 4) if x is not None else None for x in mean_lp[:16]],
                                  "note": "arrays are right-padded to the longest text; meta.json has token_ids and lengths"}, indent=1)
 
-    @modal.method()
-    def forward(self, req_json: str):
+    def _forward(self, s, req_json):
         import json, traceback
         try:
             req = json.loads(req_json)
@@ -661,50 +753,41 @@ class Target:
             return False, f"the forward block is not valid JSON: {e}"
         try:
             if req.get("type") == "generate":
-                return self._generate(req)
+                return self._generate(req, s)
             if req.get("type") == "teacher_forced":
-                return self._teacher_forced(req)
+                return self._teacher_forced(req, s)
             return False, "type must be 'generate' or 'teacher_forced'"
         except Exception:
             return False, "the request failed with an internal error (it does not count):\n" + traceback.format_exc()[-1500:]
 
-    @modal.method()
-    def reward(self, items_json: str, n: int = 2, max_tokens: int = GEN_CAP, need_original: bool = False):
-        """Answers to the reward problems with the original and/or the current edited weights.
-
-        Called after the editor has finished, so nothing here can reach it. Nothing is written to /work."""
+    def _reward(self, s, items_json, n, max_tokens, need_original):
         import json
         items = [{"qid": "reward/" + it["qid"], "source": "reward", "answer": it["answer"],
                   "prompt": it["problem"] + "\n\nPut your final answer in \\boxed{}."} for it in json.loads(items_json)]
         slim = lambda rows: [{"qid": r["qid"], "sample": r["sample"], "correct": bool(r["correct"]), "tokens": r["tokens"], "finish": r["finish"]} for r in rows]
-        out = {"original": None, "edited": None, "edited_tensors": sorted(self._edits()[0])}
+        out = {"original": None, "edited": None, "edited_tensors": sorted(self._edits(s)[0])}
         if need_original:
+            self._ensure_original()
             out["original"] = slim(self._gen("original", 8001, items, n, max_tokens))
-        if self._edits()[1] is not None:
-            self._ensure_edited_server()
-            out["edited"] = slim(self._gen("edited", 8002, items, n, max_tokens))
+        if self._edits(s)[1] is not None:
+            self._ensure_edited_server(s)
+            out["edited"] = slim(self._gen("edited", s.port, items, n, max_tokens))
         return out
 
-    @modal.method()
-    def boot_id(self) -> str:
-        return self.boot
-
-    @modal.method()
-    def put_files(self, root: str, files_json: str):
-        """Write text files under `root` (used to give a rollout the shared library)."""
+    def _put_files(self, s, root, files_json):
         import json, os
         files = json.loads(files_json)
+        root = s.real(root)
         for name, text in files.items():
             path = os.path.join(root, os.path.basename(name))
             os.makedirs(root, exist_ok=True)
             open(path, "w").write(text)
         return len(files)
 
-    @modal.method()
-    def get_files(self, root: str, max_bytes: int = 400000):
-        """Text files under `root` (flat), newest first, up to `max_bytes` in total."""
+    def _get_files(self, s, root, max_bytes):
         import os
         out, total = {}, 0
+        root = s.real(root)
         if os.path.isdir(root):
             names = sorted((n for n in os.listdir(root) if n.endswith((".md", ".txt"))), key=lambda n: -os.path.getmtime(os.path.join(root, n)))
             for n in names:
@@ -714,26 +797,171 @@ class Target:
                 out[n] = t; total += len(t)
         return out
 
-    @modal.method()
-    def snapshot(self, run_id: str):
-        """Copy /work (without large activation arrays) to the runs volume."""
+    def _snapshot(self, s, run_id):
         import os, shutil
         dst = f"/runs/{run_id}/work"
         shutil.rmtree(dst, ignore_errors=True)
         def ig(d, names):
             return [n for n in names if n.endswith(".npy") and os.path.getsize(os.path.join(d, n)) > 50 * 2 ** 20]
-        shutil.copytree("/work", dst, ignore=ig)
-        runs.commit()
+        shutil.copytree(s.work, dst, ignore=ig)
+        with self.commit_lock:
+            runs.commit()
         return sorted(os.listdir(dst))
+
+
+@app.cls(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, block_network=True,
+         timeout=150 * 60, scaledown_window=20 * 60, max_containers=1, memory=98304, cpu=8)
+class Target(_Core):
+    """One rollout per L40S: original vLLM server (8001) and edited server (8002) at 0.40 of the GPU each."""
+    rid: str = modal.parameter(default="")  # one container per value, so each rollout gets its own target
+    base: str = modal.parameter(default="")  # starting model (see base_dirs); "" is the downloaded model
+
+    @modal.enter()
+    def boot(self):
+        self._setup()
+        self.s = _Slot("/work", "/library", 8002, "/tmp/edited_ckpt")
+        self._start_kernel(self.s)
+        self.orig = start_vllm(self.mdir, "original", 8001, self.original_util, GEN_CAP + 3000)
+        self._load_hf()
+        print("BOOT ok; tensors", len(self.sd_keys))
+
+    @modal.method()
+    def py(self, code: str) -> str:
+        return self._py(self.s, code)
+
+    @modal.method()
+    def forward(self, req_json: str):
+        return self._forward(self.s, req_json)
+
+    @modal.method()
+    def reward(self, items_json: str, n: int = 2, max_tokens: int = GEN_CAP, need_original: bool = False):
+        """Answers to the reward problems with the original and/or the current edited weights.
+
+        Called after the editor has finished, so nothing here can reach it. Nothing is written to /work."""
+        return self._reward(self.s, items_json, n, max_tokens, need_original)
+
+    @modal.method()
+    def boot_id(self) -> str:
+        return self.s.boot
+
+    @modal.method()
+    def put_files(self, root: str, files_json: str):
+        """Write text files under `root` (used to give a rollout the shared library)."""
+        return self._put_files(self.s, root, files_json)
+
+    @modal.method()
+    def get_files(self, root: str, max_bytes: int = 400000):
+        """Text files under `root` (flat), newest first, up to `max_bytes` in total."""
+        return self._get_files(self.s, root, max_bytes)
+
+    @modal.method()
+    def snapshot(self, run_id: str):
+        """Copy /work (without large activation arrays) to the runs volume."""
+        return self._snapshot(self.s, run_id)
+
+
+@app.cls(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, block_network=True,
+         timeout=150 * 60, scaledown_window=20 * 60, max_containers=1, memory=98304, cpu=8)
+@modal.concurrent(max_inputs=8)
+class PackedTarget(_Core):
+    """Two rollouts per L40S. Every method takes the rollout id first.
+
+    Per rollout: /work and /library (its python kernel runs in its own mount and pid namespace, sees only its own
+    folders there, and has an address-space limit), an edited vLLM server on its own port, a restart id, a request counter.
+    Shared: the original vLLM server, started only when an original answer is not cached, and the teacher-forced
+    model (original weights; a pass swaps in the rollout's edits and hooks while it holds the GPU lock)."""
+    gid: str = modal.parameter(default="")  # one container per value; the rollouts that share it pass their own rid
+    mps: int = modal.parameter(default=0)  # 1: run the GPU processes under CUDA MPS, so their kernels can overlap instead of taking turns
+    base: str = modal.parameter(default="")  # starting model (see base_dirs); "" is the downloaded model
+    edited_util = PACK_UTIL["edited"]
+    original_util = PACK_UTIL["original"]
+    tf_tokens = 8192
+
+    @modal.enter()
+    def boot(self):
+        import os, threading, subprocess
+        self.mps_on = False
+        if self.mps:  # before any process touches the GPU; every child inherits the pipe directory
+            os.makedirs("/tmp/mps", exist_ok=True); os.makedirs("/tmp/mpslog", exist_ok=True)
+            os.environ["CUDA_MPS_PIPE_DIRECTORY"], os.environ["CUDA_MPS_LOG_DIRECTORY"] = "/tmp/mps", "/tmp/mpslog"
+            self.mps_on = subprocess.run(["nvidia-cuda-mps-control", "-d"]).returncode == 0
+        self._setup()
+        os.makedirs("/library", exist_ok=True); os.makedirs(SLOTS, exist_ok=True)
+        self.slots, self.slots_lock = {}, threading.Lock()
+        self._load_hf()
+        import torch
+        torch.cuda.set_per_process_memory_fraction(PACK_UTIL["forward_model"])  # past this a teacher-forced pass gets an out-of-memory error, never a vLLM server
+        print("BOOT ok (packed); tensors", len(self.sd_keys))
+
+    def _slot(self, rid):
+        import os
+        with self.slots_lock:
+            if rid not in self.slots:
+                i = len(self.slots)
+                s = _Slot(f"{SLOTS}/{i}/work", f"{SLOTS}/{i}/library", 8002 + i, f"{SLOTS}/{i}/ckpt", isolate=True)
+                os.makedirs(s.work, exist_ok=True); os.makedirs(s.lib, exist_ok=True)
+                self._start_kernel(s)
+                self.slots[rid] = s
+            return self.slots[rid]
+
+    @modal.method()
+    def py(self, rid: str, code: str) -> str:
+        s = self._slot(rid)
+        with s.lock:
+            return self._py(s, code)
+
+    @modal.method()
+    def forward(self, rid: str, req_json: str):
+        s = self._slot(rid)
+        with s.lock:
+            return self._forward(s, req_json)
+
+    @modal.method()
+    def reward(self, rid: str, items_json: str, n: int = 2, max_tokens: int = GEN_CAP, need_original: bool = False):
+        s = self._slot(rid)
+        with s.lock:
+            return self._reward(s, items_json, n, max_tokens, need_original)
+
+    @modal.method()
+    def boot_id(self, rid: str) -> str:
+        return self._slot(rid).boot
+
+    @modal.method()
+    def put_files(self, rid: str, root: str, files_json: str):
+        s = self._slot(rid)
+        with s.lock:
+            return self._put_files(s, root, files_json)
+
+    @modal.method()
+    def get_files(self, rid: str, root: str, max_bytes: int = 400000):
+        s = self._slot(rid)
+        with s.lock:
+            return self._get_files(s, root, max_bytes)
+
+    @modal.method()
+    def snapshot(self, rid: str, run_id: str):
+        s = self._slot(rid)
+        with s.lock:
+            return self._snapshot(s, run_id)
+
+    @modal.method()
+    def stats(self):
+        """GPU memory in use and the rollouts on this container (for tests)."""
+        import subprocess
+        smi = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()
+        import torch
+        return {"gpu_memory": smi, "mps": self.mps_on, "original_server": self.orig is not None, "forward_model_peak_mib": torch.cuda.max_memory_reserved() // 2 ** 20,
+                "slots": {rid: {"port": s.port, "edited_server": s.edited_proc is not None and s.edited_proc.poll() is None, "requests": s.k} for rid, s in self.slots.items()}}
 
 
 # ----------------------------------------------------------------------------- held-out evaluation
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=90 * 60, memory=32768)
-def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: bool = False):
+def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: bool = False, base_tag: str = ""):
+    """`base_tag`: the edit was made on that starting model (rl.loop rebasing); it is compared with that model."""
     import json, os, shutil, concurrent.futures as cf, zlib, time
     from safetensors.torch import load_file, save_file
     runs.reload()
-    mdir = target_dir()
+    mdir = base_dirs(base_tag)[0]
     items = [json.loads(l) for l in open("/heldout/math500.jsonl")]
     if limit:
         items = items[:limit]
@@ -746,38 +974,25 @@ def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: b
 
     def run(model_path, name):
         proc = start_vllm(model_path, name, 8001, 0.90, GEN_CAP + 3000)
-        jobs = [(it, s) for it in items for s in range(n)]
-
-        def one(job):
-            it, s = job
-            seed = zlib.crc32(f"heldout|{it['qid']}|{s}".encode()) & 0x7FFFFFFF
-            try:
-                r = chat(8001, name, [{"role": "user", "content": it["problem"] + "\n\nPut your final answer in \\boxed{}."}], GEN_CAP, seed=seed,
-                         temperature=0.6, top_p=0.95, top_k=20, presence_penalty=1.5, chat_template_kwargs={"enable_thinking": True})
-                ch = r["choices"][0]
-                rs = ch["message"].get("reasoning_content") or ch["message"].get("reasoning") or ""
-                text = (("<think>" + rs + "</think>") if rs else "") + (ch["message"].get("content") or "")
-                fin, toks = ch["finish_reason"], r["usage"]["completion_tokens"]
-            except Exception as e:
-                text, fin, toks = f"[request failed: {repr(e)[:200]}]", "error", 0
-            ext, ok = grade_math(text, it["answer"])
-            return {"qid": it["qid"], "sample": s, "source": "math500", "text": text, "extracted": ext, "correct": ok, "tokens": toks, "finish": fin}
-
         t = time.time()
-        with cf.ThreadPoolExecutor(256) as ex:
-            rows = list(ex.map(one, jobs))
+        rows = heldout_rows(8001, name, items, n)
         print(name, "generation seconds", round(time.time() - t), "tokens", sum(r["tokens"] for r in rows))
         stop_proc(proc)
         time.sleep(10)
         return rows
 
-    out = {"run_id": run_id, "n_per_problem": n, "problems": len(items), "cap": GEN_CAP, "edited_tensors": sorted(edits)}
-    cached = "/runs/heldout_original_cached.jsonl"  # one fixed set of the original weights' test answers, so every edit is compared with the same baseline
+    out = {"run_id": run_id, "n_per_problem": n, "problems": len(items), "cap": GEN_CAP, "edited_tensors": sorted(edits), "base": base_tag}
+    cached = heldout_cache(base_tag)  # one fixed set of the starting model's test answers, so every edit is compared with the same baseline
     if use_cached_original and os.path.exists(cached) and not limit:
         rows_o = [json.loads(l) for l in open(cached)]
         out["original_from_cache"] = True
     else:
         rows_o = run(mdir, "original")
+        if use_cached_original and base_tag and not limit and n == 2:
+            os.makedirs(os.path.dirname(cached), exist_ok=True)
+            with open(cached, "w") as f:
+                for r in rows_o:
+                    f.write(json.dumps(r) + "\n")
     out["original"] = summarize(rows_o, GEN_CAP)
     os.makedirs(f"/runs/{run_id}/heldout", exist_ok=True)
     with open(f"/runs/{run_id}/heldout/original.jsonl", "w") as f:

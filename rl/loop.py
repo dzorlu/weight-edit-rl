@@ -8,12 +8,14 @@ take one policy-gradient step on Tinker, save a checkpoint.
     uvx modal run -m rl.loop::prep_baseline            # once: the original weights' answers every rollout starts from
     uvx modal run -m rl.loop::prep_originals           # once: the original weights' answers on the splits, served from a cache
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32
+    uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32 --rollouts-per-gpu 2   # two rollouts share each L40S
 
-Cost bounds: each rollout holds one L40S for at most `rollout_minutes`; the whole run stops at `hours`.
+Cost bounds: each rollout holds one L40S (or half of one with --rollouts-per-gpu 2) for at most `rollout_minutes`; the whole run stops at `hours`.
 Outputs: /runs/rl/<exp>/ on the runs volume (steps.jsonl, one transcript per rollout).
 """
 import modal
-from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval
+from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PackedTarget, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval
+from harness.target import weights, offline, _Core, base_dirs, heldout_cache, heldout_rows, start_vllm, stop_proc, BASES_W, BASES_R
 from harness.prompts import PROMPT, GUIDE
 
 MODEL = "thinkingmachines/Inkling-2-Small:peft:262144"  # 256K-context variant; a rollout is one long sequence
@@ -135,25 +137,67 @@ def forward_request(args):
     return json.dumps(req)
 
 
+def _lenient_json(js, tries=6):
+    """Parse a JSON object that may be followed by other text and may lack up to `tries` closing brackets,
+    braces or quotes (Inkling sometimes writes `}],` where `}]],` is meant). Returns the object or None."""
+    import json
+    dec = json.JSONDecoder(strict=False)
+    for _ in range(tries + 1):
+        try:
+            return dec.raw_decode(js)[0]
+        except json.JSONDecodeError as e:
+            best = None
+            # the missing bracket belongs at the error or just before one of the last commas before it
+            # ({"chats": [[{...}], "type": ...} fails at the colon after "type")
+            pos, p = [e.pos], e.pos
+            for _ in range(3):
+                p = js.rfind(",", 0, p)
+                if p < 0:
+                    break
+                pos.append(p)
+            for at in pos:
+                for ins in ("]", "}", '"'):
+                    cand = js[:at] + ins + js[at:]
+                    try:
+                        return dec.raw_decode(cand)[0]
+                    except json.JSONDecodeError as e2:
+                        if e2.pos > e.pos + 1 and (best is None or e2.pos > best[0]):
+                            best = (e2.pos, cand)
+            if best is None:
+                return None
+            js = best[1]
+    return None
+
+
 def repair_reply(raw):
     """Read a reply the renderer could not parse: (thinking, tool name, arguments) or None.
 
-    The usual cause is tool-call JSON that is short of closing braces."""
+    Causes: tool-call JSON that is short of closing braces, and Inkling writing its own tool-call markers
+    (<|message_model|>NAME<|content_invoke_tool_json|>{...}) as plain text, which the renderer does not parse.
+    The thinking often quotes the marker while discussing it, so every occurrence is tried, last first."""
     import json, re
-    m = re.search(r"<\|message_model\|>([\w.]+)<\|content_invoke_tool_json\|>(.*?)(?:<\|end_message\|>|<\|content_model_end_sampling\|>|$)", raw, re.S)
-    if not m:
-        return None
     think = "\n\n".join(t.strip() for t in re.findall(r"<\|content_thinking\|>(.*?)<\|end_message\|>", raw, re.S))
-    js = m.group(2).strip()
-    for extra in ("", "}", "}}", "}}}", "]}", "]}}", '"}', '"}}'):
-        try:
-            obj = json.loads(js + extra)
-        except Exception:
+    raw = re.sub(r"<\|content_thinking\|>.*?<\|end_message\|>", "", raw, flags=re.S)  # markers quoted inside the thinking are not calls
+    ms = list(re.finditer(r"<\|message_model\|>([\w.]+)<\|content_invoke_tool_json\|>(.*?)(?=<\|end_message\|>|<\|content_model_end_sampling\|>|<\|message_model\|>|$)", raw, re.S))
+    if not ms:
+        return None
+    for m in reversed(ms):
+        if m.group(1).split(".")[-1] not in ("python", "forward", "web_search", "web_read"):
             continue
-        if isinstance(obj, dict):
-            args = obj.get("args", obj.get("arguments", obj))
-            return think, obj.get("name") or m.group(1), args if isinstance(args, dict) else {}
+        obj = _lenient_json(m.group(2).strip())
+        for obj in ([obj] if obj is not None else []):
+            if isinstance(obj, dict):
+                args = obj.get("args", obj.get("arguments", obj))
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {}
+                return think, obj.get("name") or m.group(1), args if isinstance(args, dict) else {}
     return None
+
+
+TEST_SPLITS = ("select", "confirm_1", "confirm_2")  # the splits whose original answers are cached for each starting model
 
 
 # In RL the reward should reflect the best edit a rollout found, so the editor always submits one.
@@ -161,7 +205,12 @@ SUBMIT_RULE_OLD = 'Submit an edit only if a paired comparison on at least 300 ge
 SUBMIT_RULE_RL = 'Always finish with your best edit saved in /work/edited. Your score is the accuracy of that edit minus the accuracy of the original weights on unseen problems, so a harmful edit scores below zero and the original weights score zero. Do not drop a promising edit because you ran out of budget to confirm it: submit the candidate your evidence supports best, and say how strong that evidence is.'
 
 
-def editor_prompt(forward_budget, web=False, known=None):
+BASE_TEXT = """
+
+STARTING WEIGHTS. The weights you are given are Qwen3.5-0.8B with an earlier edit already applied. In this session "original weights" means these starting weights: load_original, the cached original answers in /practice and your score all refer to them. Your task is to improve on them."""
+
+
+def editor_prompt(forward_budget, web=False, known=None, rebased=False):
     a, b = PROMPT.index("WHAT COUNTS."), PROMPT.index("WHAT YOU HAVE.")
     body = PROMPT[:a] + GUIDE + "\n\n" + PROMPT[b:]
     for old in ("a budget of 50 forward passes in total", "When all 50 forward passes are used"):
@@ -185,6 +234,8 @@ def editor_prompt(forward_budget, web=False, known=None):
         extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"])
     if web:
         extra += WEB_TEXT
+    if rebased:
+        extra += BASE_TEXT
     b = body.index("HOW TO WORK.")
     return body[:b].rstrip() + extra + "\n\n" + body[b:]
 
@@ -302,10 +353,104 @@ async def prep_originals(splits: str = "select,confirm_1,confirm_2"):
     await asyncio.gather(*[one(n) for n in splits.split(",")])
 
 
+# ----------------------------------------------------------------------------- rebasing: a new starting model
+@app.function(image=offline, volumes={"/weights": weights, "/runs": runs}, timeout=40 * 60, cpu=8, memory=32768)
+def make_base(tag: str, prev_tag: str, edit_run: str):
+    """A starting model `tag`: the starting model `prev_tag` with the edit of /runs/<edit_run>/work/edited applied
+    (each edited tensor replaces the one in the weights), plus a practice folder holding the problem files."""
+    import json, os, shutil
+    from safetensors.torch import load_file, save_file
+    runs.reload()
+    src, psrc = base_dirs(prev_tag)
+    dst, pdst = base_dirs(tag)
+    ed = f"/runs/{edit_run}/work/edited"
+    edits = {f[:-len(".safetensors")]: load_file(os.path.join(ed, f))["t"] for f in sorted(os.listdir(ed)) if f.endswith(".safetensors")}
+    assert edits, f"no edited tensors in {ed}"
+    shutil.rmtree(dst, ignore_errors=True); os.makedirs(dst)
+    done = set()
+    for f in os.listdir(src):
+        p = os.path.join(src, f)
+        if f.endswith(".safetensors"):
+            sd = load_file(p)
+            for n, t in edits.items():
+                if n in sd:
+                    sd[n] = t.to(sd[n].dtype); done.add(n)
+            save_file(sd, os.path.join(dst, f), metadata={"format": "pt"})
+        elif os.path.isfile(os.path.realpath(p)):
+            shutil.copy(os.path.realpath(p), os.path.join(dst, f))
+    assert done == set(edits), f"tensors not found in the weights: {sorted(set(edits) - done)}"
+    os.makedirs(pdst, exist_ok=True)
+    for f in ("problems.jsonl", "index.tsv", "splits.json", "README.txt"):
+        shutil.copy(os.path.join(psrc, f), os.path.join(pdst, f))
+    json.dump({"tag": tag, "prev": prev_tag, "edit_run": edit_run, "tensors": sorted(edits)}, open(f"{BASES_R}/{tag}/meta.json", "w"), indent=1)
+    weights.commit(); runs.commit()
+    return sorted(edits)
+
+
+@app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=100 * 60, memory=65536, cpu=8)
+def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2, reward_items: int = 128):
+    """The starting model's own answers, generated once and served from cache, as for the downloaded model.
+    part 0: the baseline answers and their summary, the reward set, the select split. part 1: the two confirm splits.
+    part 2: the test set (only needed for test scoring, so the RL loop does not wait for it)."""
+    import json, os, threading, time
+    runs.reload()
+    if not reward_items_json:
+        reward_items_json = json.dumps([json.loads(l) for l in open("/heldout/rl/reward_math.jsonl")][:reward_items])
+    mdir, pdir = base_dirs(tag)
+    proc = start_vllm(mdir, "original", 8001, 0.90, GEN_CAP + 3000)
+    sp = json.load(open(f"{pdir}/splits.json"))
+    practice = {json.loads(l)["id"]: json.loads(l) for l in open(f"{pdir}/problems.jsonl")}
+    items = lambda ids: [{"qid": i, "source": practice[i]["source"], "answer": practice[i]["answer"],
+                          "prompt": practice[i]["problem"] + "\n\nPut your final answer in \\boxed{}."} for i in ids]
+    gen = lambda its, n: _Core._gen(None, "original", 8001, its, n, GEN_CAP)  # the forward tool's generation: same prompts, seeds, sampling
+    write = lambda path, rows: (os.makedirs(os.path.dirname(path), exist_ok=True), open(path, "w").write("".join(json.dumps(r) + "\n" for r in rows)))
+    jobs, out, t = {}, {}, time.time()
+    def baseline():
+        rows = gen(items(sp["baseline"]), 2)
+        write("/tmp/bw/gen_1.jsonl", rows)
+        exec(BASELINE_CODE.replace("/work/gen_1.jsonl", "/tmp/bw/gen_1.jsonl").replace("/practice/baseline", f"{pdir}/baseline"), {})
+        out["baseline"] = len(rows)
+    def reward():
+        its = [{"qid": "reward/" + it["qid"], "source": "reward", "answer": it["answer"], "prompt": it["problem"] + "\n\nPut your final answer in \\boxed{}."}
+               for it in json.loads(reward_items_json)]
+        rows = [{"qid": r["qid"], "sample": r["sample"], "correct": bool(r["correct"]), "tokens": r["tokens"], "finish": r["finish"]} for r in gen(its, reward_n)]
+        json.dump(rows, open(f"{BASES_R}/{tag}/reward_base_{len(its)}x{reward_n}.json", "w"))
+        out["reward"] = round(sum(r["correct"] for r in rows) / len(rows), 4)
+    def test():
+        its = [json.loads(l) for l in open("/heldout/math500.jsonl")]
+        rows = heldout_rows(8001, "original", its, 2)
+        write(heldout_cache(tag), rows)
+        out["test"] = round(sum(bool(r["correct"]) for r in rows) / len(rows), 4)
+    def split(name):
+        def f():
+            rows = gen(items(sp[name]), 2)
+            write(f"{pdir}/original/{name}.jsonl", rows)
+            out[name] = round(sum(r["correct"] for r in rows) / len(rows), 4)
+        return f
+    if part == 0:
+        jobs = {"baseline": baseline, "reward": reward, "select": split("select")}
+    elif part == 1:
+        jobs = {n: split(n) for n in ("confirm_1", "confirm_2")}
+    else:
+        jobs = {"test": test}
+    ths = [threading.Thread(target=f, name=n) for n, f in jobs.items()]
+    [th.start() for th in ths]; [th.join() for th in ths]
+    stop_proc(proc)
+    missing = set(jobs) - set(out)
+    assert not missing, f"failed: {missing}"
+    runs.commit()
+    out["seconds"] = round(time.time() - t)
+    return out
+
+
 @app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol}, secrets=[modal.Secret.from_name("tinker"), modal.Secret.from_name("exa")],
               timeout=int(11.5 * 3600), nonpreemptible=True, cpu=4, memory=16384)
 async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
-                 reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = ""):
+                 reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = "",
+                 rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = ""):
+    """start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
+    rebase_every k: after every k steps, the best-rewarded submitted edit of those k steps is applied to the starting model.
+    update_check: after each update, score the trained batch under the new weights (KL, change per rollout)."""
     import asyncio, re, json, os, time
     import tinker, torch
     from tinker_cookbook import model_info
@@ -315,6 +460,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
     from tinker_cookbook.rl.types import Transition, Trajectory
     from tinker_cookbook.rl.data_processing import trajectory_to_data
 
+    if rollouts_per_gpu not in (1, 2):
+        raise ValueError("rollouts_per_gpu must be 1 or 2")
     d = f"/runs/rl/{exp}"
     if os.path.exists(f"{d}/steps.jsonl"):
         raise RuntimeError(f"{d} already has a run; a restart would train on top of it. Use a new --exp.")
@@ -332,7 +479,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         tc = await asyncio.to_thread(lambda: svc.create_lora_training_client(base_model=MODEL, rank=32).result())
     items = [json.loads(l) for l in open("/heldout/rl/reward_math.jsonl")][:reward_items]
     items_json = json.dumps(items)
-    bm = "/runs/data/math_practice/baseline/meta.json"
+    pdir_of = lambda tag: f"{BASES_R}/{tag}/practice" if tag else "/runs/data/math_practice"
+    bm = f"{pdir_of('')}/baseline/meta.json"
     known = json.load(open(bm)) if os.path.exists(bm) else None
     prompt_text = editor_prompt(forward_budget, web, known)
     tools = TOOLS + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
@@ -356,7 +504,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             elif not os.path.exists(path) or len(text) > os.path.getsize(path):
                 open(path, "w").write(text)
     json.dump({"exp": exp, "model": MODEL, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
-               "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "web": web, "library": lib_dir, "baseline_given": bool(known), "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
+               "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
+               "rebase_every": rebase_every, "start_base": start_base, "update_check": update_check, "start_from": start_from,
+               "baseline_given": bool(known), "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
 
     def slog(rec):
         with open(f"{d}/steps.jsonl", "a") as f:
@@ -364,22 +514,42 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         runs.commit()
         print("STEP", json.dumps(rec)[:1500])
 
-    # The original weights' answers on the reward set are the same for every rollout: generate them once.
-    t = time.time()
-    base_cache = f"/runs/rl/_reward_base_{len(items)}x{reward_n}.json"  # the original weights' answers on the reward set never change
-    if os.path.exists(base_cache):
-        base_rows = json.load(open(base_cache))
-    else:
-        base_rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base").reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
-        json.dump(base_rows, open(base_cache, "w"))
-    base_ok = {(r["qid"], r["sample"]): r["correct"] for r in base_rows}
-    base_acc = sum(base_ok.values()) / len(base_ok)
-    slog({"event": "reward_base", "answers": len(base_ok), "accuracy": round(base_acc, 4), "hit_cap": round(sum(r["finish"] == "length" for r in base_rows) / len(base_rows), 4), "seconds": round(time.time() - t)})
+    async def load_base(tag):
+        """What the rollouts of one starting model share: its prompt (baseline summary) and its answers on the reward set
+        (the reward is edited minus these)."""
+        runs.commit()  # keep this run's own writes, then see the starting model's files written by make_base / gen_base
+        runs.reload()
+        t = time.time()
+        pdir = pdir_of(tag)
+        kn = json.load(open(f"{pdir}/baseline/meta.json")) if os.path.exists(f"{pdir}/baseline/meta.json") else None
+        if tag:
+            rows = json.load(open(f"{BASES_R}/{tag}/reward_base_{len(items)}x{reward_n}.json"))
+        else:
+            base_cache = f"/runs/rl/_reward_base_{len(items)}x{reward_n}.json"  # the original weights' answers on the reward set never change
+            if os.path.exists(base_cache):
+                rows = json.load(open(base_cache))
+            else:
+                rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base").reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
+                json.dump(rows, open(base_cache, "w"))
+        ok = {(r["qid"], r["sample"]): r["correct"] for r in rows}
+        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag)), "ok": ok, "acc": sum(ok.values()) / len(ok)}
+        slog({"event": "reward_base", "base": tag, "answers": len(ok), "accuracy": round(B["acc"], 4),
+              "hit_cap": round(sum(r["finish"] == "length" for r in rows) / len(rows), 4), "seconds": round(time.time() - t)})
+        return B
 
-    async def rollout(sampler, rid):
+    B = await load_base(start_base)
+
+    async def rollout(sampler, rid, gid, B):
+        base_ok, prompt_text = B["ok"], B["prompt"]
         t0 = time.time()
         deadline = min(t0 + rollout_minutes * 60, run_deadline)
-        tgt = Target.with_options(scaledown_window=300)(rid=rid)
+        if rollouts_per_gpu > 1:  # one container per gid; every call names the rollout
+            obj = PackedTarget.with_options(scaledown_window=300)(gid=gid, base=B["tag"])
+            call = lambda m, *a: getattr(obj, m).remote.aio(rid, *a)
+        else:
+            obj = Target.with_options(scaledown_window=300)(rid=rid, base=B["tag"])
+            call = lambda m, *a: getattr(obj, m).remote.aio(*a)
+        n_repaired = 0
         messages = renderer.create_conversation_prefix_with_tools(tools, system_prompt="")  # Inkling's own tool-call format
         messages.append({"role": "user", "content": prompt_text})
         transitions, used_f, used_py, used_web, nags, turn, cutoffs = [], 0, 0, 0, 0, 0, 0
@@ -387,8 +557,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         asked_final, ended, final_text = False, "turn limit", None
         ctx = 0
         if web:
-            await tgt.put_files.remote.aio(LIBRARY, json.dumps(lib_files()))
-        boot = await tgt.boot_id.remote.aio()
+            await call("put_files", LIBRARY, json.dumps(lib_files()))
+        boot = await call("boot_id")
         restarts = 0
         log = open(f"{d}/{rid}.jsonl", "a")
         w = lambda rec: (log.write(json.dumps(rec) + "\n"), log.flush())
@@ -426,6 +596,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                         tcs = [ToolCall(function=ToolCall.FunctionBody(name=nm, arguments=json.dumps(fargs)), id=f"functions.{nm}:0")]
                         msg = {"role": "assistant", "content": [{"type": "thinking", "thinking": thinking}] if thinking else "", "tool_calls": tcs}
                         text, bad, repaired = "", [], True
+                        n_repaired += 1
                 w({"turn": turn, "t": round(time.time() - t0), "prompt_tokens": ob.length, "completion_tokens": len(s.tokens), "finish": str(s.stop_reason),
                    "reasoning": "\n\n".join(x for x in (thinking, text if tcs else "") if x), "final": "" if tcs else text, "call": tcs[0].function.name if tcs else None, "repaired": repaired})
                 messages.append(msg)
@@ -461,13 +632,13 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                         res = "[python budget exhausted]"
                     else:
                         used_py += 1
-                        res = await tgt.py.remote.aio(body)
+                        res = await call("py", body)
                 elif kind == "forward":
                     body = forward_request(args)
                     if must_finish():
                         res = "[no forward passes left]"
                     else:
-                        ok, res = await tgt.forward.remote.aio(body)
+                        ok, res = await call("forward", body)
                         if ok:
                             used_f += 1
                         else:
@@ -484,7 +655,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                                 res = text
                             else:
                                 slug = re.sub(r"[^a-z0-9]+", "-", (title or body).lower()).strip("-")[:60] or "page"
-                                await tgt.put_files.remote.aio(LIBRARY, json.dumps({slug + ".md": f"# {title}\n\nSource: {body}\n\n{text}"}))
+                                await call("put_files", LIBRARY, json.dumps({slug + ".md": f"# {title}\n\nSource: {body}\n\n{text}"}))
                                 res = f"[saved to /library/{slug}.md, {len(text)} characters]\n\n{title}\n\n{text[:4000]}"
                         except Exception as e:
                             res = "[the page could not be read: " + repr(e)[:200] + "]"
@@ -500,13 +671,13 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                             res = "[the search failed: " + repr(e)[:200] + "]"
                 else:
                     body, res = tc.function.arguments[:2000], f"[unknown tool {kind!r}; the tools are python and forward]"
-                now = await tgt.boot_id.remote.aio()
+                now = await call("boot_id")
                 if now != boot:  # the target machine was replaced (for example after running out of memory): /work and the kernel are gone
                     boot, restarts = now, restarts + 1
                     res = (res + "\n\n[The target machine restarted after this call, probably because it ran out of memory. /work was reset and all python variables are lost, "
                            "including any saved edit: save your edit again. Keep large arrays out of memory: load activations for a few layers at a time.]")
                     if web:
-                        await tgt.put_files.remote.aio(LIBRARY, json.dumps(lib_files()))
+                        await call("put_files", LIBRARY, json.dumps(lib_files()))
                 w({"turn": turn, "tool": kind, "input": body[:20000], "result": res[:20000], "used_f": used_f, "used_py": used_py, "target_restarts": restarts})
                 if turn % 8 == 0:
                     await runs.commit.aio()  # so a running step can be watched
@@ -522,7 +693,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 if asked_final and time.time() > deadline + 15 * 60:
                     ended = "time limit (hard)"; break
             # reward: the submitted edit against the cached original answers, paired by problem and sample
-            rw = await tgt.reward.remote.aio(items_json, reward_n, GEN_CAP, False)
+            rw = await call("reward", items_json, reward_n, GEN_CAP, False)
             if rw["edited"] is None:
                 reward, acc_e, cap_e = 0.0, None, None
             else:
@@ -533,16 +704,17 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             lib_out = {}
             if web:
                 try:
-                    lib_out = await tgt.get_files.remote.aio(LIBRARY)
+                    lib_out = await call("get_files", LIBRARY)
                 except Exception as e:
                     w({"library_error": repr(e)[:300]})
             try:
-                await tgt.snapshot.remote.aio(f"rl/{exp}/work/{rid}")
+                await call("snapshot", f"rl/{exp}/work/{rid}")
             except Exception as e:
                 w({"snapshot_error": repr(e)[:300]})
             usd = (tok["prefill"] * PRICE["prefill"] + tok["cached"] * PRICE["cached"] + tok["sampled"] * PRICE["sample"]) / 1e6
             info = {"rid": rid, "ok": True, "reward": round(reward, 4), "edited_accuracy": acc_e, "edited_hit_cap": cap_e, "edited_tensors": rw["edited_tensors"], "ended": ended,
-                    "turns": turn, "forward_used": used_f, "python_used": used_py, "web_used": used_web, "target_restarts": restarts, "minutes": round((time.time() - t0) / 60, 1), "tokens": tok, "sampling_usd": round(usd, 3)}
+                    "turns": turn, "forward_used": used_f, "python_used": used_py, "web_used": used_web, "target_restarts": restarts, "minutes": round((time.time() - t0) / 60, 1), "tokens": tok, "sampling_usd": round(usd, 3),
+                    "base": B["tag"], "repaired_turns": n_repaired}
             info["library_files"] = sorted(lib_out)
             w({"summary": info, "final_text": final_text})
             return Trajectory(transitions=transitions, final_ob=tinker.ModelInput.empty()), info, lib_out
@@ -553,27 +725,67 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             log.close()
 
     adam = tinker.AdamParams(learning_rate=lr, beta1=0.9, beta2=0.95, eps=1e-8)
+    sampler0, recent, n_base = None, [], 0  # recent: (step, rollout info) since the last rebase
+
+    def get_sampler(path):
+        s = svc.create_sampling_client(model_path=path)
+        return s if hasattr(s, "compute_logprobs") else s.result()
+
+    async def check_update(new_sampler, batch, step):
+        """Score the batch just trained on under the new weights. Old = the sampler's log-probabilities, which are the
+        pre-update policy's (on-policy, one update per batch). Also against the step-0 policy (KL from the start)."""
+        def score(sc):
+            futs = [sc.compute_logprobs(tinker.ModelInput.from_ints(b["tokens"] + [b["target"][-1]])) for b in batch]
+            return [torch.tensor([x if x is not None else float("nan") for x in f.result()[1:]]) for f in futs]
+        new = await asyncio.to_thread(score, new_sampler)
+        ref = await asyncio.to_thread(score, sampler0) if (sampler0 is not None and step > 0) else None
+        lo, ln, adv_all, per = [], [], [], {}
+        for i, b in enumerate(batch):
+            m = b["mask"] > 0
+            o, n = b["logprobs"][m], new[i][m]
+            lo.append(o); ln.append(n); adv_all.append(b["advantages"][m])
+            per.setdefault(b["rid"], [0.0, b["a_final"]])[0] += float((n - o).sum())
+        lo, ln, adv_all = torch.cat(lo), torch.cat(ln), torch.cat(adv_all)
+        dl = ln - lo  # log pi_new - log pi_old on tokens sampled from pi_old
+        out = {"tokens": int(dl.numel()), "kl_old_new_k1": round(float((-dl).mean()), 6), "kl_old_new_k3": round(float((dl.exp() - 1 - dl).mean()), 6),
+               "mean_logprob_change": round(float(dl.mean()), 6), "objective_change": round(float((adv_all * dl).sum()), 3),
+               "per_rollout": {r: {"total_change": round(v[0], 3), "advantage": round(v[1], 3)} for r, v in per.items()}}
+        xs, ys = [v[1] for v in per.values()], [v[0] for v in per.values()]
+        if len(xs) > 2:
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            sx = sum((x - mx) ** 2 for x in xs) ** 0.5; sy = sum((y - my) ** 2 for y in ys) ** 0.5
+            out["corr_change_advantage"] = round(sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy), 3) if sx > 0 and sy > 0 else None
+        if ref is not None:
+            l0 = torch.cat([ref[i][b["mask"] > 0] for i, b in enumerate(batch)])
+            d0 = l0 - lo  # log pi_0 - log pi_old, tokens from pi_old: KL(pi_old || pi_0)
+            out.update(kl_old_step0_k1=round(float((-d0).mean()), 6), kl_old_step0_k3=round(float((d0.exp() - 1 - d0).mean()), 6))
+        return out
+
     for step in range(steps):
         if time.time() > run_deadline - 20 * 60:
             slog({"event": "stopped", "reason": "run time limit", "step": step}); break
         t = time.time()
         sampler = await asyncio.to_thread(lambda: tc.save_weights_and_get_sampling_client().result())
-        out = await asyncio.gather(*[rollout(sampler, f"{exp}-s{step}-r{i}") for i in range(group_size)])
+        if sampler0 is None:
+            sampler0 = sampler
+        out = await asyncio.gather(*[rollout(sampler, f"{exp}-s{step}-r{i}", f"{exp}-s{step}-g{i // rollouts_per_gpu}", B) for i in range(group_size)])
         for _, _, lib_out in out:
             lib_merge(lib_out)
         good = [(tr, info) for tr, info, _ in out if info["ok"]]
         rewards = [info["reward"] for _, info in good]
-        rec = {"event": "step", "step": step, "rollouts": [info for _, info, _ in out], "rewards": rewards, "library": sorted(os.listdir(lib_dir)),
+        recent += [(step, info) for _, info in good]
+        rec = {"event": "step", "step": step, "base": B["tag"], "rollouts": [info for _, info, _ in out], "rewards": rewards, "library": sorted(os.listdir(lib_dir)),
                "mean_reward": round(sum(rewards) / len(rewards), 4) if rewards else None, "rollout_minutes": round((time.time() - t) / 60, 1)}
         if len(set(rewards)) >= 2:
             mean = sum(rewards) / len(rewards)
             std = (sum((r - mean) ** 2 for r in rewards) / len(rewards)) ** 0.5
             adv = [(r - mean) / (std + 1e-6) for r in rewards]  # centred and scaled within the group
-            t1, n_tok, futs, masks, samp = time.time(), 0, [], [], []
-            for (tr, _), a in zip(good, adv):
+            t1, n_tok, futs, batch = time.time(), 0, [], []
+            for (tr, info), a in zip(good, adv):
                 for dm in trajectory_to_data(tr, float(a), include_provenance=False):
-                    masks.append(dm.loss_fn_inputs.pop("mask").to_torch() > 0)  # importance_sampling takes target_tokens, logprobs, advantages
-                    samp.append(dm.loss_fn_inputs["logprobs"].to_torch())
+                    mask = dm.loss_fn_inputs.pop("mask").to_torch()  # importance_sampling takes target_tokens, logprobs, advantages
+                    batch.append({"rid": info["rid"], "a_final": a, "tokens": dm.model_input.to_ints(), "target": dm.loss_fn_inputs["target_tokens"].to_torch().tolist(),
+                                  "mask": mask, "logprobs": dm.loss_fn_inputs["logprobs"].to_torch(), "advantages": dm.loss_fn_inputs["advantages"].to_torch()})
                     n_tok += dm.model_input.length
                     futs.append(tc.forward_backward([dm], loss_fn="importance_sampling"))
             opt = tc.optim_step(adam)
@@ -581,28 +793,63 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             optim = await asyncio.to_thread(lambda: opt.result())
             metrics = [r.metrics for r in results]
             # Sampler against trainer on the same tokens (as in tinker_cookbook.rl.metrics.compute_kl_sample_train)
+            masks = [b["mask"] > 0 for b in batch]; samp = [b["logprobs"] for b in batch]
             diffs = torch.cat([sp[mk] - r.loss_fn_outputs[0]["logprobs"].to_torch()[mk] for sp, mk, r in zip(samp, masks, results)])
             sp_all = torch.cat([sp[mk] for sp, mk in zip(samp, masks)])
             rec.update(kl_sample_train_v1=round(diffs.mean().item(), 5), kl_sample_train_v2=round(0.5 * (diffs ** 2).mean().item(), 5),
                        logprob_diff_max=round(diffs.abs().max().item(), 3), frac_tokens_diff_over_0p2=round((diffs.abs() > 0.2).float().mean().item(), 5),
                        entropy=round(-sp_all.mean().item(), 4), action_tokens=int(sp_all.numel()),
                        optim_metrics={k: round(float(v), 5) for k, v in (getattr(optim, "metrics", None) or {}).items()})
-            rec.update(trained=True, advantages=[round(a, 3) for a in adv], training_sequences=len(futs), training_tokens=n_tok,
+            rec.update(trained=True, lr=lr, advantages=[round(a, 3) for a in adv], training_sequences=len(futs), training_tokens=n_tok,
                        training_usd=round(n_tok * PRICE["train"] / 1e6, 2), loss_sum=round(sum(m.get("loss:sum", 0.0) for m in metrics), 3), training_seconds=round(time.time() - t1))
+            os.makedirs(f"{d}/datums", exist_ok=True)  # the exact training data of this step
+            torch.save([{k: (torch.tensor(v, dtype=torch.int32) if isinstance(v, list) else v) for k, v in b.items()} for b in batch], f"{d}/datums/step{step}.pt")
         else:
+            batch = []
             rec.update(trained=False, reason="all rewards equal or fewer than two rollouts finished; no gradient")
         ck = await asyncio.to_thread(lambda: tc.save_weights_for_sampler(f"{exp}-step{step + 1}", ttl_seconds=7 * 24 * 3600).result())
         st = await asyncio.to_thread(lambda: tc.save_state(f"{exp}-step{step + 1}", ttl_seconds=2 * 24 * 3600).result())
         rec.update(sampler_checkpoint=ck.path, state_checkpoint=st.path, minutes_total=round((time.time() - T0) / 60, 1))
+        if update_check and batch:
+            try:
+                t2 = time.time()
+                rec["update_check"] = await check_update(await asyncio.to_thread(get_sampler, ck.path), batch, step)
+                rec["update_check"]["seconds"] = round(time.time() - t2)
+            except Exception as e:
+                rec["update_check"] = {"error": repr(e)[:500]}
         slog(rec)
+        # A new starting model: the best-rewarded edit of the last `rebase_every` steps, applied to the current one.
+        if rebase_every and (step + 1) % rebase_every == 0 and step + 1 < steps:
+            cands = [(info["reward"], s, info) for s, info in recent if info.get("edited_tensors") and info["reward"] > 0]
+            recent = []
+            if not cands:
+                slog({"event": "rebase", "skipped": "no submitted edit with a positive reward", "step": step})
+                continue
+            r_best, s_best, info = max(cands, key=lambda x: x[0])
+            n_base += 1
+            tag, t3 = f"{exp}-k{n_base}", time.time()
+            try:
+                tensors = await make_base.remote.aio(tag, B["tag"], f"rl/{exp}/work/{info['rid']}")
+                parts = await asyncio.gather(gen_base.remote.aio(tag, 0, items_json, reward_n), gen_base.remote.aio(tag, 1, items_json, reward_n))
+                await gen_base.spawn.aio(tag, 2, items_json, reward_n)  # the test set's cache, for test scoring; not waited for
+                prev = B
+                B = await load_base(tag)
+                slog({"event": "rebase", "step": step, "base": tag, "previous": prev["tag"], "from_rollout": info["rid"], "its_reward": r_best,
+                      "tensors": len(tensors), "new_base_reward_set_accuracy": round(B["acc"], 4), "previous_base_accuracy": round(prev["acc"], 4),
+                      "generated": parts, "minutes": round((time.time() - t3) / 60, 1)})
+            except Exception as e:
+                n_base -= 1
+                slog({"event": "rebase", "step": step, "failed": repr(e)[:800], "kept_base": B["tag"]})
     slog({"event": "done", "minutes_total": round((time.time() - T0) / 60, 1)})
     return True
 
 
 @app.local_entrypoint()
 def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
-       reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = ""):
-    call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library)
+       reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = "", rollouts_per_gpu: int = 1,
+       rebase_every: int = 0, update_check: bool = True, start_base: str = ""):
+    call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library, rollouts_per_gpu,
+                        rebase_every, update_check, start_base)
     print("SPAWNED", call.object_id)
 
 
@@ -617,18 +864,25 @@ async def test_step_edits(exp: str, steps: str = "0", parallel: int = 2):
         shutil.copy("/runs/inkling2s-qwen08-math-methods-1/heldout/original.jsonl", cached)
         await runs.commit.aio()
     sem = asyncio.Semaphore(parallel)
+    # each edit is compared with the starting model it was made on (rebasing changes it between steps)
+    base_of = {}
+    if os.path.exists(f"/runs/rl/{exp}/steps.jsonl"):
+        for l in open(f"/runs/rl/{exp}/steps.jsonl"):
+            r = json.loads(l)
+            if r.get("event") == "step":
+                base_of[r["step"]] = r.get("base", "")
 
     async def one(rid):
         path = f"rl/{exp}/work/{rid}"
         if os.path.exists(f"/runs/{path}/heldout.json"):
             return rid, json.load(open(f"/runs/{path}/heldout.json"))
         async with sem:
-            return rid, await heldout_eval.remote.aio(path, 2, 0, True)
+            return rid, await heldout_eval.remote.aio(path, 2, 0, True, base_of.get(int(rid.rsplit("-s", 1)[1].split("-")[0]), ""))
 
     rids = sorted(d for d in os.listdir(f"/runs/rl/{exp}/work") if any(d.startswith(f"{exp}-s{s}-") for s in steps.split(",")))
     res = await asyncio.gather(*[one(r) for r in rids])
     out = {rid: {"original": h["original"]["accuracy_pct"], "edited": (h.get("edited") or {}).get("accuracy_pct"),
-                 "paired": h.get("paired_edited_minus_original")} for rid, h in res}
+                 "paired": h.get("paired_edited_minus_original"), "base": h.get("base", "")} for rid, h in res}
     runs.reload()
     p = f"/runs/rl/{exp}/test.json"
     allres = json.load(open(p)) if os.path.exists(p) else {}
@@ -636,6 +890,16 @@ async def test_step_edits(exp: str, steps: str = "0", parallel: int = 2):
     json.dump(allres, open(p, "w"), indent=1)
     await runs.commit.aio()
     print(json.dumps(out, indent=1))
+
+
+@app.local_entrypoint()
+def rebase(tag: str, edit_run: str, prev: str = ""):
+    """By hand: a starting model `tag` = starting model `prev` + the edit in /runs/<edit_run>/work/edited, with its caches."""
+    import time
+    t = time.time()
+    print("tensors", len(make_base.remote(tag, prev, edit_run)), round(time.time() - t), "s")
+    calls = [gen_base.spawn(tag, k) for k in (0, 1, 2)]
+    print([c.get() for c in calls], round(time.time() - t), "s")
 
 
 @app.local_entrypoint()
