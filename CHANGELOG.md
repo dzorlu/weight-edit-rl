@@ -6,7 +6,7 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 **The publish loop commits the run page and trajectories to the site's main** before each publish. Two sessions publish the site (one for the blog post, one for the runs), and a publish from a checkout without the latest run page replaced it with an old one.
 
-**The live run page shows both runs.** `hero3` (steps 1 and 2, with notes) and `nolib1` (branched after step 1, so its first step is numbered step 2) in one step table, with each step's mean test score when available. The trajectory viewer numbers `nolib1`'s steps the same way.
+**The live run page shows both runs.** Step 1 in its own table, marked as shared: it ran once, in `hero3`, and `nolib1` branched from its checkpoint. Then one table per run for its own steps: `hero3` step 2 (with notes and web), `nolib1` from step 2 on (no notes, no web). Each step shows its 8 rewards and, when available, the test score of each edit. The trajectory viewer numbers `nolib1`'s steps the same way.
 
 **`hero3` stopped after step 2** (17:54). Step 1 mean reward +13.6, step 2 +24.3; entropy 0.44 → 0.27. Step 1's edits on the test set: +0.6, +11.1, +16.7, +15.2, +32.8, no edit, +2.5, +29.4, in line with their rewards. Step 2's edits are being scored on the test set. The step-2 checkpoint is kept (`hero3-step2`). The live page and the repo now follow `nolib1`.
 

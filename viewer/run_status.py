@@ -66,24 +66,37 @@ for r in runs:
                  f"<a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(r['name'])}'>logs</a></li>")
 parts.append("</ul>")
 
-# combined step table
-parts.append("<h2>Steps</h2><div class='tw'><table><tr><th>Step</th><th>Run</th><th>Mean reward</th><th>Rewards</th><th>Mean test</th><th>Entropy</th><th>Minutes</th></tr>")
-rows = []
+# step tables: steps shared by every run first, then each run's own steps
+def step_row(r, s, label):
+    n = s["step"] + 1 + r["offset"]
+    rids = [x["rid"] for x in s.get("rollouts", [])]
+    tests = [r["test"][i]["paired"]["diff_pp"] for i in rids if i in r["test"] and r["test"][i].get("paired")]
+    mt = f"{sum(tests) / len(tests):+.1f} ({len(tests)} edits)" if tests else "pending"
+    tl = ", ".join(f"{r['test'][i]['paired']['diff_pp']:+.1f}" if i in r["test"] and r["test"][i].get("paired") else ("no edit" if i in r["test"] else "–") for i in rids)
+    rw = s.get("rewards") or []
+    return (f"<tr><td>{n}</td><td>{label}</td><td>{sgn(s.get('mean_reward'))}</td><td>{', '.join(sgn(x) for x in rw)}</td>"
+            f"<td>{mt}</td><td>{tl if tests else ''}</td><td>{e(s.get('entropy', '–'))}</td></tr>")
+
+HEAD = "<div class='tw'><table><tr><th>Step</th><th>Run</th><th>Mean reward</th><th>Rewards</th><th>Mean test</th><th>Test per rollout</th><th>Entropy</th></tr>"
+root = next((r for r in runs if not r["parent"]), None)
+shared_k = min([r["offset"] for r in runs if r["parent"]] or [0])
+if root and shared_k:
+    parts.append(f"<h2>Step{'s' if shared_k > 1 else ''} 1{'' if shared_k == 1 else f' to {shared_k}'}, shared by both runs</h2>")
+    parts.append(f"<p class='meta'>These steps ran once, in {e(root['name'])}. Its checkpoint after step {shared_k} is where the other run{'s' if len(runs) > 2 else ''} branched off.</p>" + HEAD)
+    for s in root["done"][:shared_k]:
+        parts.append(step_row(root, s, "shared"))
+    parts.append("</table></div>")
 for r in runs:
-    for s in r["done"]:
-        n = s["step"] + 1 + r["offset"]
-        rids = [x["rid"] for x in s.get("rollouts", [])]
-        tests = [r["test"][i]["paired"]["diff_pp"] for i in rids if i in r["test"] and r["test"][i].get("paired")]
-        mt = f"{sum(tests) / len(tests):+.1f} ({len(tests)} edits)" if tests else "pending"
-        rw = s.get("rewards") or []
-        rows.append((n, r["name"], f"<tr><td>{n}</td><td>{e(r['name'])}</td><td>{sgn(s.get('mean_reward'))}</td><td>{', '.join(sgn(x) for x in rw)}</td>"
-                                   f"<td>{mt}</td><td>{e(s.get('entropy', '–'))}</td><td>{e(s.get('rollout_minutes'))}</td></tr>"))
+    own = r["done"][shared_k:] if (r is root and shared_k) else r["done"]
+    first = (shared_k if r is root else r["offset"]) + 1
+    state = "stopped" if (r["ended"] or r["name"] == "hero3") else "running"
+    parts.append(f"<h2>{e(r['name'])}: steps from {first}, {NOTES.get(r['name'], '')} ({state})</h2>" + HEAD)
+    for s in own:
+        parts.append(step_row(r, s, e(r["name"])))
     cur = len(r["done"])
-    if not (r["ended"] or r["name"] == "hero3") and cur < r["cfg"]["steps"]:
-        rows.append((cur + 1 + r["offset"], r["name"], f"<tr><td>{cur + 1 + r['offset']}</td><td>{e(r['name'])}</td><td colspan='5'>in progress</td></tr>"))
-for _, _, h in sorted(rows, key=lambda x: (x[0], x[1])):
-    parts.append(h)
-parts.append("</table></div>")
+    if state == "running" and cur < r["cfg"]["steps"]:
+        parts.append(f"<tr><td>{cur + 1 + r['offset']}</td><td>{e(r['name'])}</td><td colspan='5'>in progress</td></tr>")
+    parts.append("</table></div>")
 
 # in-progress step of each running run
 for r in runs:
