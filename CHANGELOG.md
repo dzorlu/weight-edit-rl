@@ -2,6 +2,10 @@
 
 Changes to the prompt, the tools and the RL setup, newest first, with the reason for each.
 
+## 15 November 2026
+
+**Step 4 of `rebase2` and `rebase1`** (01:25 and 01:40). Both steps had the same setup (the `nolib1` step-3 editor, Qwen as downloaded): `rebase2` mean +20.1 (30.5, 13.7, 12.9, 28.5, 21.5, 31.2, 23.4, −0.8), `rebase1` mean +9.6 (6.6, 1.6, 8.2, 12.1, 17.6, 2.3, 16.0, 12.5). Two groups of 8 from the same editor differ by 10 points, a measure of how noisy one step's mean is. Update check at learning rate 2e-4 (`rebase2`): KL between the editor before and after the update 0.0043 per token, the step's objective rose by 2,431, and low-advantage rollouts lost far more likelihood than high-advantage ones (−991 and −305 against −14 and −76). `rebase1` made its first new starting model (`rebase1-k1`); `rebase2` updates after step 5. AIME 2024 scoring of `hero3` step 1's edits: the original Qwen and 6 of 8 edits score 0%, the best edit 2.1%; mean gain +0.3 ± 0.3 points.
+
 ## 14 November 2026
 
 **AIME 2024 as a second evaluation set, scored automatically** (23:55). `aime2024` in `EVAL_SETS`: the 30 problems of AIME 2024 (HuggingFaceH4/aime_2024), each listed 4 times so that 2 samples per row give 8 answers per problem, 240 in all. `scripts/auto_test.sh` now scores every finished step's edits on MATH-500 and then on AIME 2024 (`evaluate --edits`, no new rollouts), and backfills the earlier steps (`hero3` steps 1–2, `nolib1` steps 2–3) on AIME 2024. GPU priority: the RL runs hold 8 GPUs; a new starting model's cached answers block the next step, so a step is scored only after the next step's rollouts have started, and one scoring job runs at a time (each uses 2 GPUs: the starting model's answers, then the edits), so the RL runs keep their 8.
