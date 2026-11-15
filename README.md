@@ -21,18 +21,23 @@ Every edit tried so far, sorted by kind: [a map of weight edits](https://tinkeri
 
 Qwen3.5-0.8B fails at math in one way: it writes "Wait..." and rechecks until it runs out of tokens. Every gain above comes from stopping that. Transcripts and scores are in `results/searches/`.
 
-### RL run `hero3`
+### RL runs
 
-Inkling 2 Small trained with RL as the editor. 8 rollouts per step, 32 forward passes each, web search and a shared notes library on. Reward: accuracy gain of the submitted edit on 256 hidden answers (the reward set). Stopped after 2 steps to run a cleaner comparison (see below).
+Inkling 2 Small trained with RL as the editor: 8 rollouts per step, 32 forward passes each. Reward: accuracy gain of the submitted edit on the reward set. Test: the same edit on MATH-500. Points are percentage points.
 
-| Step | Mean reward | Rewards (points) |
-|---|---|---|
-| 1, untrained | +13.6 | 1.2, 9.4, 18.8, 15.6, 33.6, 0, 2.7, 27.3 |
-| 2, after one update | +24.3 | 32.0, 20.7, 13.3, 25.8, 24.2, 27.3, 23.1, 27.7 |
+| Step | Run | Mean reward | Mean test |
+|---|---|---|---|
+| 1, untrained | shared | +13.6 | +15.5 |
+| 2 | `hero3`, with shared notes | +24.3 | +24.3 |
+| 2 | `nolib1`, no notes | +13.5 | +13.5 |
+| 3 | `nolib1` | +18.7 | |
 
-Step 1's edits scored on the test set (MATH-500, 6.6% before) track their rewards: +0.6, +11.1, +16.7, +15.2, +32.8, no edit, +2.5, +29.4. The best, rollout 5, reaches 39.4%, above Opus's 34.8%.
+- The best single edits beat Opus: +32.8 on MATH-500 (39.4%), against +27.2.
+- `hero3`'s step-2 gain came with the notes: every rollout copied step 1's best recipe ([analysis](results/rl/hero3/analysis_step1_vs_step2.md)).
+- Without notes, training did not move the mean ([analysis](results/rl/nolib1/analysis_step2.md)). An update check found the first update changed the editor by about 0.0006 nats per token: the learning rate (2e-5) was about 10× too low for LoRA ([update check](results/rl/hero3/update_check.md)).
+- Next (14 November 2026, night): `rebase2` and `rebase1` resume from `nolib1`'s step-3 checkpoint with learning rate 2e-4 and move the starting model to the best edit so far, every 2 steps and every step. See [CHANGELOG.md](CHANGELOG.md).
 
-Step 2's gain cannot yet be credited to training alone: its rollouts read step 1's notes, which included the best rollout's recipe, and all 8 copied it. Analysis: [`results/rl/hero3/analysis_step1_vs_step2.md`](results/rl/hero3/analysis_step1_vs_step2.md). A second run, `nolib1`, resumes from step 1's checkpoint with no notes and no web tools; its first step measures the update alone. Live: [run page](https://tinkerings.dev/posts/weight-space-programming/run/).
+Live: [run pages](https://tinkerings.dev/posts/weight-space-programming/run/).
 
 ## How it works
 
@@ -62,7 +67,7 @@ Step 2's gain cannot yet be credited to training alone: its rollouts read step 1
 ```
 
 - **Rollout.** One editing search on a fresh copy of the target, ending with the editor's best edit. The target always starts from its original weights; only the editor changes between RL steps.
-- **Problem sets.** Train: MATH and GSM8K training problems, with a ready-made index and disjoint splits for diagnosing and choosing (`select`) and for checking the final edit (validation: `confirm_1`, `confirm_2`). Reward set: hidden MATH training problems that score each rollout. Test: MATH-500, run once on standalone searches.
+- **Problem sets.** Train: MATH and GSM8K training problems, with a ready-made index and disjoint splits for diagnosing and choosing (`select`) and for checking the final edit (validation: `confirm_1`, `confirm_2`). Reward set: 128 hidden MATH training problems × 2 samples that score each rollout; this is the only set that feeds training. Test: MATH-500 (500 × 2 answers), from MATH's test split, used only to measure: every submitted edit, from standalone searches and from each RL step, is scored on it after the fact. The editor never sees the reward or test set.
 - **Given at the start.** The original weights' answers on 512 train generations with a summary of the failure, and their answers on every split. The forward tool reuses these, so a paired test only generates the edited side.
 - **`python` tool.** A CPU sandbox with the target's weights on disk: load a tensor, analyse it, save an edited tensor. No internet, no gradients.
 - **`forward` tool.** Runs the target on a GPU. Either it answers train problems (original weights, edited weights, or both side by side), or it reads supplied text and returns log-probabilities and activations. The number of calls is limited.
@@ -93,6 +98,13 @@ uvx modal run -m rl.loop::prep_originals
 # the RL loop: 8 steps of 8 rollouts, 32 forward passes per rollout; --web adds web search and a shared paper library
 uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32 --web
 ./rl/watch.sh run1 <modal-app-id>
+
+# resume from a checkpoint, 2 rollouts per GPU, new starting model every 2 steps, LoRA learning rate
+uvx modal run --detach -m rl.loop::rl --exp rebase2 --steps 5 --group-size 8 --forward-budget 32 --rollouts-per-gpu 2 \
+  --rebase-every 2 --lr 2e-4 --start-from tinker://<run>:train:0/weights/<checkpoint>
+
+# score one finished step's submitted edits on the test set (MATH-500); k counts the loop's steps from 0
+uvx modal run --detach -m rl.loop::test --exp rebase2 --steps <k>
 ```
 
 Measured cost of one full-length search: about 100 minutes on one L40S (about $3) plus under $1 of Tinker.
