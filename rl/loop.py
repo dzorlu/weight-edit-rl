@@ -9,13 +9,14 @@ take one policy-gradient step on Tinker, save a checkpoint.
     uvx modal run -m rl.loop::prep_originals           # once: the original weights' answers on the splits, served from a cache
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32 --rollouts-per-gpu 2   # two rollouts share each L40S
+    uvx modal run --detach -m rl.loop::evaluate --name ev1 --checkpoint tinker://... --dataset gsm8k_test   # rollouts with no update, edits scored
 
 Cost bounds: each rollout holds one L40S (or half of one with --rollouts-per-gpu 2) for at most `rollout_minutes`; the whole run stops at `hours`.
 Outputs: /runs/rl/<exp>/ on the runs volume (steps.jsonl, one transcript per rollout).
 """
 import modal
 from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PackedTarget, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval
-from harness.target import weights, offline, _Core, base_dirs, heldout_cache, heldout_rows, start_vllm, stop_proc, BASES_W, BASES_R
+from harness.target import weights, offline, _Core, base_dirs, heldout_cache, heldout_rows, start_vllm, stop_proc, BASES_W, BASES_R, EVAL_SETS, prep_eval_set
 from harness.prompts import PROMPT, GUIDE
 
 MODEL = "thinkingmachines/Inkling-2-Small:peft:262144"  # 256K-context variant; a rollout is one long sequence
@@ -447,8 +448,11 @@ def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2
               timeout=int(11.5 * 3600), nonpreemptible=True, cpu=4, memory=16384)
 async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
                  reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = "",
-                 rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = ""):
+                 rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "",
+                 mode: str = "rl", eval_dataset: str = "math500", eval_limit: int = 0, eval_parallel: int = 4):
     """start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
+    mode "eval" (rl.loop::evaluate): one group of rollouts from `start_from` (a state or sampler path; "" is the untrained
+    editor) with no training update, written to /runs/eval/<exp>/; every submitted edit is then scored on `eval_dataset`.
     rebase_every k: after every k steps, the best-rewarded submitted edit of those k steps is applied to the starting model.
     update_check: after each update, score the trained batch under the new weights (KL, change per rollout).
     force_rewards: tests only, comma-separated rewards that replace the measured ones so a short run trains."""
@@ -463,7 +467,11 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 
     if rollouts_per_gpu not in (1, 2):
         raise ValueError("rollouts_per_gpu must be 1 or 2")
-    d = f"/runs/rl/{exp}"
+    evaluating = mode == "eval"
+    if evaluating:
+        steps, rebase_every = 1, 0
+    root = "eval" if evaluating else "rl"
+    d = f"/runs/{root}/{exp}"
     if os.path.exists(f"{d}/steps.jsonl"):
         raise RuntimeError(f"{d} already has a run; a restart would train on top of it. Use a new --exp.")
     os.makedirs(d, exist_ok=True)
@@ -474,7 +482,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
     renderer = get_renderer(model_info.get_recommended_renderer_name(base_name), tokenizer)
     stop = renderer.get_stop_sequences()
     svc = tinker.ServiceClient()
-    if start_from:
+    if evaluating and "/sampler_weights/" in start_from:
+        tc = None  # sampling only: the sampler checkpoint is used as it is
+    elif start_from:
         tc = await asyncio.to_thread(lambda: svc.create_training_client_from_state(start_from).result())
     else:
         tc = await asyncio.to_thread(lambda: svc.create_lora_training_client(base_model=MODEL, rank=32).result())
@@ -485,7 +495,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
     known = json.load(open(bm)) if os.path.exists(bm) else None
     prompt_text = editor_prompt(forward_budget, web, known)
     tools = TOOLS + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
-    lib_dir = f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
+    lib_dir = f"{d}/_library" if evaluating else f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
     os.makedirs(lib_dir, exist_ok=True)
     if not os.path.exists(f"{lib_dir}/INDEX.md"):
         open(f"{lib_dir}/INDEX.md", "w").write("# Library index\n\nOne line per file: file name, what it is, whether it helped.\n")
@@ -507,7 +517,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
     json.dump({"exp": exp, "model": MODEL, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
                "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
                "rebase_every": rebase_every, "start_base": start_base, "update_check": update_check, "start_from": start_from,
-               "baseline_given": bool(known), "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
+               "baseline_given": bool(known), "mode": mode, "eval_dataset": eval_dataset if evaluating else None, "eval_limit": eval_limit,
+               "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
 
     def slog(rec):
         with open(f"{d}/steps.jsonl", "a") as f:
@@ -539,6 +550,10 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         return B
 
     B = await load_base(start_base)
+    cache_call = None
+    if evaluating and not eval_limit and not os.path.exists(heldout_cache(start_base, eval_dataset)):
+        # the starting model's answers on the evaluation set, generated once while the rollouts run
+        cache_call = await heldout_eval.spawn.aio(f"eval/{exp}/_original", 2, 0, True, start_base, eval_dataset)
 
     async def rollout(sampler, rid, gid, B):
         base_ok, prompt_text = B["ok"], B["prompt"]
@@ -709,7 +724,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 except Exception as e:
                     w({"library_error": repr(e)[:300]})
             try:
-                await call("snapshot", f"rl/{exp}/work/{rid}")
+                await call("snapshot", f"{root}/{exp}/work/{rid}")
             except Exception as e:
                 w({"snapshot_error": repr(e)[:300]})
             usd = (tok["prefill"] * PRICE["prefill"] + tok["cached"] * PRICE["cached"] + tok["sampled"] * PRICE["sample"]) / 1e6
@@ -766,7 +781,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         if time.time() > run_deadline - 20 * 60:
             slog({"event": "stopped", "reason": "run time limit", "step": step}); break
         t = time.time()
-        sampler = await asyncio.to_thread(lambda: tc.save_weights_and_get_sampling_client().result())
+        sampler = await asyncio.to_thread(lambda: get_sampler(start_from) if tc is None else tc.save_weights_and_get_sampling_client().result())
         if sampler0 is None:
             sampler0 = sampler
         out = await asyncio.gather(*[rollout(sampler, f"{exp}-s{step}-r{i}", f"{exp}-s{step}-g{i // rollouts_per_gpu}", B) for i in range(group_size)])
@@ -780,6 +795,20 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         recent += [(step, info) for _, info in good]
         rec = {"event": "step", "step": step, "base": B["tag"], "rollouts": [info for _, info, _ in out], "rewards": rewards, "library": sorted(os.listdir(lib_dir)),
                "mean_reward": round(sum(rewards) / len(rewards), 4) if rewards else None, "rollout_minutes": round((time.time() - t) / 60, 1)}
+        if evaluating:  # no training update: score the submitted edits and stop
+            rec.update(trained=False, reason="evaluation")
+            slog(rec)
+            if cache_call is not None:
+                try:
+                    await cache_call.get.aio()
+                except Exception as e:
+                    slog({"event": "original_cache", "failed": repr(e)[:500]})
+            infos = {f"{root}/{exp}/work/{info['rid']}": info for _, info, _ in out}
+            summary = await score_edits(f"eval/{exp}", [p for p, i in infos.items() if i["ok"]], eval_dataset, start_base, eval_limit, eval_parallel,
+                                        {p: i["reward"] for p, i in infos.items() if i["ok"]},
+                                        extra={"checkpoint": start_from or "untrained", "failed_rollouts": [i["rid"] for i in infos.values() if not i["ok"]]})
+            slog({"event": "done", "summary": summary, "minutes_total": round((time.time() - T0) / 60, 1)})
+            return summary
         if len(set(rewards)) >= 2:
             mean = sum(rewards) / len(rewards)
             std = (sum((r - mean) ** 2 for r in rewards) / len(rewards)) ** 0.5
@@ -909,3 +938,91 @@ def rebase(tag: str, edit_run: str, prev: str = ""):
 @app.local_entrypoint()
 def test(exp: str, steps: str = "0", parallel: int = 2):
     print("SPAWNED", test_step_edits.spawn(exp, steps, parallel).object_id)
+
+
+# ----------------------------------------------------------------------------- evaluating an editor checkpoint
+async def score_edits(out, paths, dataset, base_tag, limit=0, parallel=4, rewards=None, extra=None):
+    """Score the edit in /runs/<path>/work/edited of each path on `dataset` against starting model `base_tag`, paired
+    by problem (heldout_eval, with the starting model's answers cached per (base, dataset)). A path without an edit scores 0.
+    Writes /runs/<out>/scores.json (one row per path) and /runs/<out>/summary.json (mean and standard error of the
+    paired gain across paths), and returns the summary."""
+    import asyncio, json, os, time
+    t0 = time.time()
+    await runs.reload.aio()
+    cached = heldout_cache(base_tag, dataset)
+    if not limit and not os.path.exists(cached):  # once, before the edits, so they share one set of original answers
+        await heldout_eval.remote.aio(f"{out}/_original", 2, 0, True, base_tag, dataset)
+        await runs.reload.aio()
+    sem = asyncio.Semaphore(parallel)
+    has_edit = lambda p: os.path.isdir(f"/runs/{p}/work/edited") and any(f.endswith(".safetensors") for f in os.listdir(f"/runs/{p}/work/edited"))
+
+    async def one(p):
+        row = {"run": p, "reward_pp": round(100 * rewards[p], 2) if rewards and rewards.get(p) is not None else None}
+        if not has_edit(p):
+            return {**row, "edit": False, "gain_pp": 0.0}
+        async with sem:
+            try:
+                h = await heldout_eval.remote.aio(p, 2, limit, True, base_tag, dataset)
+            except Exception as e:
+                return {**row, "edit": True, "error": repr(e)[:300]}
+        pr = h["paired_edited_minus_original"]
+        return {**row, "edit": True, "original_pct": h["original"]["accuracy_pct"], "edited_pct": h["edited"]["accuracy_pct"],
+                "gain_pp": pr["diff_pp"], "se_pp": pr["se_pp"], "wrong_to_right": pr["wrong_to_right"], "right_to_wrong": pr["right_to_wrong"],
+                "edited_cut_pct": h["edited"]["cut_at_max_tokens_pct"], "edited_tensors": h["edited_tensors"]}
+
+    rows = await asyncio.gather(*[one(p) for p in paths])
+    g = [r["gain_pp"] for r in rows if "gain_pp" in r]
+    rw = [r["reward_pp"] for r in rows if r["reward_pp"] is not None]
+    k = len(g)
+    mean = sum(g) / k if k else None
+    se = (sum((x - mean) ** 2 for x in g) / (k - 1)) ** 0.5 / k ** 0.5 if k > 1 else None
+    summary = {"dataset": dataset, "base": base_tag or "original", "problems": limit or "all", "answers_per_problem": 2,
+               "scored": k, "with_edit": sum(r.get("edit", False) for r in rows), "errors": [r["run"] for r in rows if "error" in r],
+               "gain_mean_pp": round(mean, 2) if mean is not None else None, "gain_se_pp": round(se, 2) if se is not None else None,
+               "gains_pp": g, "reward_mean_pp": round(sum(rw) / len(rw), 2) if rw else None, "minutes": round((time.time() - t0) / 60, 1), **(extra or {})}
+    os.makedirs(f"/runs/{out}", exist_ok=True)
+    json.dump(rows, open(f"/runs/{out}/scores.json", "w"), indent=1)
+    json.dump(summary, open(f"/runs/{out}/summary.json", "w"), indent=1)
+    await runs.commit.aio()
+    print("SUMMARY", json.dumps(summary))
+    return summary
+
+
+@app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol}, timeout=int(8 * 3600))
+async def eval_score(name: str, edits: str, dataset: str = "math500", base_tag: str = "", limit: int = 0, parallel: int = 4):
+    """Score existing edits (comma-separated run paths under /runs, e.g. rl/nolib1/work/nolib1-s1-r0) into /runs/eval/<name>/;
+    their reward-set rewards are read from the RL run's steps.jsonl when there is one."""
+    import json, os
+    await runs.reload.aio()
+    paths = [p.strip().strip("/") for p in edits.split(",") if p.strip()]
+    rewards = {}
+    for p in paths:
+        sj = f"/runs/{p.split('/work/')[0]}/steps.jsonl"
+        if "/work/" in p and os.path.exists(sj):
+            for l in open(sj):
+                r = json.loads(l)
+                for i in r.get("rollouts") or []:
+                    if i.get("ok") and i["rid"] == p.rsplit("/", 1)[1]:
+                        rewards[p] = i["reward"]
+    return await score_edits(f"eval/{name}", paths, dataset, base_tag, limit, parallel, rewards, extra={"edits": paths})
+
+
+@app.local_entrypoint()
+def evaluate(name: str, checkpoint: str = "", base: str = "original", n: int = 8, dataset: str = "math500", limit: int = 0,
+             forward_budget: int = 32, rollout_minutes: int = 120, rollouts_per_gpu: int = 2, reward_items: int = 128, parallel: int = 4, edits: str = ""):
+    """Evaluate an editor checkpoint: n rollouts with no training update (same prompt and settings as RL rollouts; no notes,
+    no web), then every submitted edit scored on `dataset` against starting model `base`. Outputs in /runs/eval/<name>/.
+    checkpoint: a Tinker state or sampler path (tinker://...), "" for the untrained editor (a fresh LoRA).
+    base: "original" (Qwen3.5-0.8B as downloaded) or a starting-model tag under /weights/bases/.
+    limit: score on the first `limit` problems only (tests). edits: skip the rollouts and score these run paths instead."""
+    if dataset not in EVAL_SETS:
+        raise SystemExit(f"dataset must be one of {sorted(EVAL_SETS)}")
+    tag = "" if base == "original" else base
+    print("evaluation set:", dataset, prep_eval_set.remote(dataset), "problems")
+    if edits:
+        call = eval_score.spawn(name, edits, dataset, tag, limit, parallel)
+    else:
+        call = rl_run.spawn(name, steps=1, group_size=n, forward_budget=forward_budget, rollout_minutes=rollout_minutes, hours=rollout_minutes / 60 + 0.5,
+                            reward_items=reward_items, start_from=checkpoint, web=False, rollouts_per_gpu=rollouts_per_gpu, update_check=False,
+                            start_base=tag, mode="eval", eval_dataset=dataset, eval_limit=limit, eval_parallel=parallel)
+    print("SPAWNED", call.object_id, "-> /runs/eval/" + name + "/summary.json")

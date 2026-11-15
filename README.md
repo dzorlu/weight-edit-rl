@@ -105,7 +105,15 @@ uvx modal run --detach -m rl.loop::rl --exp rebase2 --steps 5 --group-size 8 --f
 
 # score one finished step's submitted edits on the test set (MATH-500); k counts the loop's steps from 0
 uvx modal run --detach -m rl.loop::test --exp rebase2 --steps <k>
+
+# evaluate an editor checkpoint: 8 rollouts with no training update (RL settings: 32 forward passes, 120 minutes,
+# 2 per GPU, no notes, no web), each submitted edit scored on --dataset (math500 or gsm8k_test) against --base
+# ("original" or a starting-model tag); --checkpoint "" is the untrained editor. Output: /runs/eval/<name>/summary.json
+uvx modal run --detach -m rl.loop::evaluate --name nolib1-s3-gsm8k --checkpoint tinker://<run>:train:0/sampler_weights/<checkpoint> \
+  --base original --n 8 --dataset gsm8k_test
 ```
+
+`evaluate --edits rl/<exp>/work/<rid>,...` scores existing edits without new rollouts. As of 14 November 2026 the scoring path is tested at small scale; the rollouts reuse the RL loop's rollout function, but a full `evaluate` run with rollouts has not finished yet.
 
 Measured cost of one full-length search: about 100 minutes on one L40S (about $3) plus under $1 of Tinker.
 

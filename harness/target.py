@@ -3,7 +3,7 @@
 - `Target` (one L40S per search or rollout): a Python sandbox over the weight files, the forward tool
   (generation and teacher-forced passes), a reward method, and a snapshot of the work folder.
 - `PackedTarget`: the same tools for two rollouts on one L40S (each method takes the rollout id first).
-- `heldout_eval`: MATH-500, original weights against the submitted edit, paired by problem.
+- `heldout_eval`: MATH-500 (or another set in EVAL_SETS), original weights against the submitted edit, paired by problem.
 - `prep`: downloads the target and builds the practice and held-out sets.
 - `paper_edit`: writes the published Math edit of arXiv 2611.09382 as a control.
 
@@ -227,13 +227,54 @@ def base_dirs(tag=""):
     return f"{BASES_W}/{tag}", f"{BASES_R}/{tag}/practice"
 
 
-def heldout_cache(tag=""):
-    """The starting model's answers on the test set, generated once (2 per problem, same seeds as heldout_eval)."""
-    return f"{BASES_R}/{tag}/heldout_original.jsonl" if tag else "/runs/heldout_original_cached.jsonl"
+# ----------------------------------------------------------------------------- evaluation sets
+def _build_gsm8k_test(n=500, seed=20261115):
+    """500 problems of GSM8K's test split, a fixed random sample (the practice set uses only GSM8K's train split)."""
+    import random
+    from datasets import load_dataset
+    rows = []
+    for i, r in enumerate(load_dataset("openai/gsm8k", "main")["test"]):
+        sol, ans = r["answer"].rsplit("####", 1)
+        rows.append({"qid": f"gsm8k_test/{i}", "problem": r["question"], "answer": ans.strip().replace(",", ""), "source": "gsm8k_test"})
+    random.Random(seed).shuffle(rows)
+    return rows[:n]
 
 
-def heldout_rows(port, name, items, n):
-    """Answers to MATH-500 problems, as heldout_eval generates them (seeded by problem and sample)."""
+# Sets an edit can be scored on (heldout_eval, rl.loop::evaluate). To add one: a file of {qid, problem, answer, source} rows,
+# a function that builds it (run once by prep_eval_set; None if `prep` writes it) and a grader (text, gold) -> (extracted, correct).
+# The starting model's answers on each set are cached per starting model (heldout_cache).
+EVAL_SETS = {
+    "math500": {"file": "/heldout/math500.jsonl", "build": None, "grade": grade_math},
+    "gsm8k_test": {"file": "/heldout/gsm8k_test.jsonl", "build": _build_gsm8k_test, "grade": grade_math},
+}
+
+
+def heldout_cache(tag="", dataset="math500"):
+    """The starting model's answers on an evaluation set, generated once (2 per problem, same seeds as heldout_eval)."""
+    if dataset == "math500":
+        return f"{BASES_R}/{tag}/heldout_original.jsonl" if tag else "/runs/heldout_original_cached.jsonl"
+    return f"{BASES_R}/{tag}/eval_{dataset}_original.jsonl" if tag else f"/runs/data/eval_cache/{dataset}_original.jsonl"
+
+
+@app.function(image=base_src, volumes={"/heldout": heldout_vol}, timeout=1800, cpu=2, memory=8192)
+def prep_eval_set(dataset: str):
+    """Write an evaluation set's problem file once; returns its number of problems."""
+    import json, os
+    spec = EVAL_SETS[dataset]
+    heldout_vol.reload()
+    if not os.path.exists(spec["file"]):
+        if spec["build"] is None:
+            raise RuntimeError(f"{spec['file']} is missing; run `uvx modal run -m harness.target --step prep`")
+        rows = spec["build"]()
+        with open(spec["file"], "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        heldout_vol.commit()
+    return sum(1 for _ in open(spec["file"]))
+
+
+def heldout_rows(port, name, items, n, grade=grade_math):
+    """Answers to evaluation problems, as heldout_eval generates them (seeded by problem and sample)."""
     import concurrent.futures as cf, zlib
     jobs = [(it, s) for it in items for s in range(n)]
 
@@ -249,8 +290,8 @@ def heldout_rows(port, name, items, n):
             fin, toks = ch["finish_reason"], r["usage"]["completion_tokens"]
         except Exception as e:
             text, fin, toks = f"[request failed: {repr(e)[:200]}]", "error", 0
-        ext, ok = grade_math(text, it["answer"])
-        return {"qid": it["qid"], "sample": s, "source": "math500", "text": text, "extracted": ext, "correct": ok, "tokens": toks, "finish": fin}
+        ext, ok = grade(text, it["answer"])
+        return {"qid": it["qid"], "sample": s, "source": it.get("source", "math500"), "text": text, "extracted": ext, "correct": ok, "tokens": toks, "finish": fin}
 
     with cf.ThreadPoolExecutor(256) as ex:
         return list(ex.map(one, jobs))
@@ -956,13 +997,16 @@ class PackedTarget(_Core):
 
 # ----------------------------------------------------------------------------- held-out evaluation
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=90 * 60, memory=32768)
-def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: bool = False, base_tag: str = ""):
-    """`base_tag`: the edit was made on that starting model (rl.loop rebasing); it is compared with that model."""
+def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: bool = False, base_tag: str = "", dataset: str = "math500"):
+    """The edit in /runs/<run_id>/work/edited against its starting model on an evaluation set (EVAL_SETS), paired by problem.
+    `base_tag`: the edit was made on that starting model (rl.loop rebasing); it is compared with that model.
+    `limit`: only the first `limit` problems. Results: /runs/<run_id>/heldout.json (MATH-500) or heldout_<dataset>.json."""
     import json, os, shutil, concurrent.futures as cf, zlib, time
     from safetensors.torch import load_file, save_file
     runs.reload()
     mdir = base_dirs(base_tag)[0]
-    items = [json.loads(l) for l in open("/heldout/math500.jsonl")]
+    spec = EVAL_SETS[dataset]
+    items = [json.loads(l) for l in open(spec["file"])]
     if limit:
         items = items[:limit]
     ed_dir = f"/runs/{run_id}/work/edited"
@@ -975,27 +1019,33 @@ def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: b
     def run(model_path, name):
         proc = start_vllm(model_path, name, 8001, 0.90, GEN_CAP + 3000)
         t = time.time()
-        rows = heldout_rows(8001, name, items, n)
+        rows = heldout_rows(8001, name, items, n, spec["grade"])
         print(name, "generation seconds", round(time.time() - t), "tokens", sum(r["tokens"] for r in rows))
         stop_proc(proc)
         time.sleep(10)
         return rows
 
-    out = {"run_id": run_id, "n_per_problem": n, "problems": len(items), "cap": GEN_CAP, "edited_tensors": sorted(edits), "base": base_tag}
-    cached = heldout_cache(base_tag)  # one fixed set of the starting model's test answers, so every edit is compared with the same baseline
-    if use_cached_original and os.path.exists(cached) and not limit:
-        rows_o = [json.loads(l) for l in open(cached)]
-        out["original_from_cache"] = True
-    else:
+    out = {"run_id": run_id, "dataset": dataset, "n_per_problem": n, "problems": len(items), "cap": GEN_CAP, "edited_tensors": sorted(edits), "base": base_tag}
+    cached = heldout_cache(base_tag, dataset)  # one fixed set of the starting model's answers, so every edit is compared with the same baseline
+    rows_o = None
+    if use_cached_original and os.path.exists(cached):  # with a limit, the cached answers to those problems
+        want = {(it["qid"], s) for it in items for s in range(n)}
+        rows_o = [r for r in map(json.loads, open(cached)) if (r["qid"], r["sample"]) in want]
+        if len(rows_o) == len(want):
+            out["original_from_cache"] = True
+        else:
+            rows_o = None
+    if rows_o is None:
         rows_o = run(mdir, "original")
-        if use_cached_original and base_tag and not limit and n == 2:
+        if use_cached_original and not limit and n == 2 and not os.path.exists(cached):
             os.makedirs(os.path.dirname(cached), exist_ok=True)
             with open(cached, "w") as f:
                 for r in rows_o:
                     f.write(json.dumps(r) + "\n")
     out["original"] = summarize(rows_o, GEN_CAP)
-    os.makedirs(f"/runs/{run_id}/heldout", exist_ok=True)
-    with open(f"/runs/{run_id}/heldout/original.jsonl", "w") as f:
+    tag = "heldout" if dataset == "math500" else f"heldout_{dataset}"
+    os.makedirs(f"/runs/{run_id}/{tag}", exist_ok=True)
+    with open(f"/runs/{run_id}/{tag}/original.jsonl", "w") as f:
         for r in rows_o:
             f.write(json.dumps(r) + "\n")
     if edits:
@@ -1017,12 +1067,12 @@ def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: b
         rows_e = run(ed, "edited")
         out["edited"] = summarize(rows_e, GEN_CAP)
         out["paired_edited_minus_original"] = paired_stats(rows_o, rows_e)
-        with open(f"/runs/{run_id}/heldout/edited.jsonl", "w") as f:
+        with open(f"/runs/{run_id}/{tag}/edited.jsonl", "w") as f:
             for r in rows_e:
                 f.write(json.dumps(r) + "\n")
     else:
         out["note"] = "the editor submitted the original weights"
-    with open(f"/runs/{run_id}/heldout.json", "w") as f:
+    with open(f"/runs/{run_id}/{tag}.json", "w") as f:
         json.dump(out, f, indent=1)
     runs.commit()
     print("HELDOUT", json.dumps(out))
