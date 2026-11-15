@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**`hero3` stopped after step 2** (19:05). Step 1 mean reward +13.6, step 2 +24.3; entropy 0.44 → 0.27. Step 1's edits on the test set: +0.6, +11.1, +16.7, +15.2, +32.8, no edit, +2.5, +29.4, in line with their rewards. Step 2's edits are being scored on the test set. The step-2 checkpoint is kept (`hero3-step2`). The live page and the repo now follow `nolib1`.
+
 **A second arm without the library: `nolib1`** (17:45). Starts from `hero3`'s step-1 checkpoint, same prompt and settings, but no web tools and no `/library`. In `hero3`, step 2's rollouts read step 1's notes, including the best rollout's full recipe, so step 2's gain mixes the training update with copying. `nolib1`'s first step measures the update alone; `hero3` continues as the arm with the library.
 
 **Each step's edits are scored on the test set** (`rl.loop::test`). The reward set trains the editor, so it cannot also measure it. Each rollout's submitted edit is now scored on MATH-500, which the RL loop never uses, against one cached set of the original weights' answers. 2 GPUs, alongside the rollouts' 8.

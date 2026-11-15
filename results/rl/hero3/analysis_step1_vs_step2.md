@@ -1,5 +1,7 @@
 # hero3: step 1 vs step 2 vs Opus 5.5 (snapshot 2026-11-14)
 
+Update, 19:10: all 8 step 2 rollouts finished; mean reward +24.3 (s1-r5: +27.3). Step 1 test scores for r6 and r7: +2.5 and +29.4. The text below was written with 7 of 8 step 2 rollouts finished.
+
 Sources: `hero3-s0-r*.jsonl` (step 1), `hero3-s1-r*.jsonl` (step 2), `steps.jsonl`, `config.json`, `results/searches/opus-5.5/`. Numbers come from `analyze_steps.py` in this folder (`python3 analyze_steps.py --detail`). Edit form, direction and strength were annotated by hand from each FINAL SUBMISSION text. Rewards are in points (reward × 100).
 
 ## Summary
@@ -27,8 +29,8 @@ Columns: fwd/py/web = forward passes, Python calls, web calls used. Tensors = co
 | s0-r3 | 15.6 | 15.2 | 85.9 | 77 | 11/63/0 | 6 (6/0/0) | col scale + col zero | 18 ready-to-stop units ×5, 4 loop units = 0 | 37 (11.2) | 9 (7) | +18.0 / +16.8 | 2 (2) | 10/3 | 1/1/1 | 149k |
 | s0-r4 | 33.6 | 32.8 | 66.1 | 84 | 9/72/0 | 48 (24/6/18) | dir− + dir+ | ` Wait` specific −1.0, `</think>` specific +2.0 (top-600) | 40 (12.0) | 8 (6) | +36.3 / +45.3 | 1 (1) | 5/1 | 2/2/0 | 136k |
 | s0-r5 | 0.0 | none | 8.6 | 27 | 0/19/0 | 0 | none | ended "no tool call in five replies" | none | 0 | none | 0 | 0/0 | 1/0/7 | 50k |
-| s0-r6 | 2.7 | pending | 106.2 | 96 | 14/79/0 | 1 (0/1/0) | dir− | loop direction (mean loop − mean finished, L23 input), −1 on L23 o_proj | 41 (12.4) | 10 (7) | +2.0 / +2.0 | 4 (3) | 8/10 | 2/3/0 | 185k |
-| s0-r7 | 27.3 | pending | 59.9 | 86 | 14/69/0 | 48 (24/6/18) | dir− + dir+ | plain ` Wait` readout −1.0 on 48; plain `</think>` readout +0.6 on L18-23 MLP | 43 (11.2) | 9 (6) | +32.4 / +38.3 | 5 (2) | 4/2 | 1/1/1 | 147k |
+| s0-r6 | 2.7 | 2.5 | 106.2 | 96 | 14/79/0 | 1 (0/1/0) | dir− | loop direction (mean loop − mean finished, L23 input), −1 on L23 o_proj | 41 (12.4) | 10 (7) | +2.0 / +2.0 | 4 (3) | 8/10 | 2/3/0 | 185k |
+| s0-r7 | 27.3 | 29.4 | 59.9 | 86 | 14/69/0 | 48 (24/6/18) | dir− + dir+ | plain ` Wait` readout −1.0 on 48; plain `</think>` readout +0.6 on L18-23 MLP | 43 (11.2) | 9 (6) | +32.4 / +38.3 | 5 (2) | 4/2 | 1/1/1 | 147k |
 
 ### Step 2 (after one update; library holds step 1's notes)
 
@@ -39,7 +41,7 @@ Columns: fwd/py/web = forward passes, Python calls, web calls used. Tensors = co
 | s1-r2 | 13.3 | 58.0 | 42 | 7/32/0 | 48 | dir− + dir+ | ` Wait` −1.0, `</think>` +1.0 | 13 (7.5) | 7 (4) | +17.2 / +19.9 | 0 (0) | 0/0 | 2/0/0 | 65k |
 | s1-r3 | 25.8 | 49.5 | 34 | 5/27/0 | 48 | dir+ | `</think>` +1.75 | 10 (12.1) | 3 (2) | +29.1 / +35.7 (edited only, n=2) | 0 (0) | 0/0 | 1/0/0 | 54k |
 | s1-r4 | 24.2 | 78.5 | 75 | 12/60/0 | 48 | dir+ | `</think>` +1.75 | 26 (17.1) | 8 (6) | +23.8 / +32.4 | 4 (3) | 1/1 | 2/1/0 | 102k |
-| s1-r5 | unfinished | 69.7 | 49 | 9/38/0 | none yet | dir+ | `</think>` +2.5 under test at turn 49 | 29 (11.7) | 0 (5, edited only) | not reached | 3 (3) | 0/1 | 1/1/0 | 81k |
+| s1-r5 | 27.3 (finished after this analysis; details below are from turn 49) | 69.7 | 49 | 9/38/0 | none yet | dir+ | `</think>` +2.5 under test at turn 49 | 29 (11.7) | 0 (5, edited only) | not reached | 3 (3) | 0/1 | 1/1/0 | 81k |
 | s1-r6 | 23.1 | 49.4 | 52 | 9/40/0 | 48 | dir+ | `</think>` +2.0 | 22 (7.1) | 6 (4) | +26.6 / +31.3 | 3 (3) | 0/0 | 2/1/0 | 73k |
 | s1-r7 | 27.7 | 49.6 | 42 | 7/32/0 | 48 | dir+ | `</think>` +2.0 | 12 (7.8) | 7 (5) | +29.3 / +40.2 | 0 (0) | 0/0 | 2/1/0 | 70k |
 

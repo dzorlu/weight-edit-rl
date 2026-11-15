@@ -21,7 +21,18 @@ Every edit tried so far, sorted by kind: [a map of weight edits](https://tinkeri
 
 Qwen3.5-0.8B fails at math in one way: it writes "Wait..." and rechecks until it runs out of tokens. Every gain above comes from stopping that. Transcripts and scores are in `results/searches/`.
 
-The RL loop has run one full step on a small test (4 rollouts, 8 forward passes each): rewards of +13.3, +4.7, 0 and 0 points, one policy-gradient update, one checkpoint. Rollouts are in `results/rl/smoke3/`. A trained editor has not been compared with an untrained one yet.
+### RL run `hero3`
+
+Inkling 2 Small trained with RL as the editor. 8 rollouts per step, 32 forward passes each, web search and a shared notes library on. Reward: accuracy gain of the submitted edit on 256 hidden answers (the reward set). Stopped after 2 steps to run a cleaner comparison (see below).
+
+| Step | Mean reward | Rewards (points) |
+|---|---|---|
+| 1, untrained | +13.6 | 1.2, 9.4, 18.8, 15.6, 33.6, 0, 2.7, 27.3 |
+| 2, after one update | +24.3 | 32.0, 20.7, 13.3, 25.8, 24.2, 27.3, 23.1, 27.7 |
+
+Step 1's edits scored on the test set (MATH-500, 6.6% before) track their rewards: +0.6, +11.1, +16.7, +15.2, +32.8, no edit, +2.5, +29.4. The best, rollout 5, reaches 39.4%, above Opus's 34.8%.
+
+Step 2's gain cannot yet be credited to training alone: its rollouts read step 1's notes, which included the best rollout's recipe, and all 8 copied it. Analysis: [`results/rl/hero3/analysis_step1_vs_step2.md`](results/rl/hero3/analysis_step1_vs_step2.md). A second run, `nolib1`, resumes from step 1's checkpoint with no notes and no web tools; its first step measures the update alone. Live: [run page](https://tinkerings.dev/posts/weight-edits/run/).
 
 ## How it works
 
