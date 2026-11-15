@@ -1,18 +1,21 @@
 #!/bin/bash
 # Every 30 minutes: pull an RL run's logs, push them to this repo, and publish the live run page and the
-# trajectory viewer to the website. Usage: scripts/publish_live.sh <exp> [max-hours]
+# trajectory viewer to the website. Usage: scripts/publish_live.sh "<exp> [<exp> ...]" [max-hours]
 # RUNS (optional) lists every run the status page shows, e.g. RUNS="hero3 nolib1:hero3@1"; defaults to <exp>.
 # The site is published from a separate worktree of the site repo; the run page and trajectory data are committed to its main first.
 EXP=$1; MAXH=${2:-16}; REPO=$(cd "$(dirname "$0")/.." && pwd); SITE=${SITE:-$HOME/repos/dzorlu.github.io}; LIVE=$HOME/repos/wt/dzorlu.github.io-live
 START=$(date +%s)
 [ -d "$LIVE" ] || (cd "$SITE" && git fetch -q origin && git worktree add -q --detach "$LIVE" origin/main)
 while true; do
-  cd "$REPO"; mkdir -p results/rl/$EXP
-  for f in $(uvx -q modal volume ls glimmer-runs /rl/$EXP 2>/dev/null | grep -o "$EXP-s[0-9]*-r[0-9]*.jsonl\|steps.jsonl\|config.json"); do
-    uvx -q modal volume get --force glimmer-runs /rl/$EXP/$f results/rl/$EXP/$f >/dev/null 2>&1; done
-  if ! grep -rIl -E "sk-ant-|tml-[A-Za-z0-9]{20}|@gmail|/Users/" results/rl/$EXP >/dev/null; then
-    git add results/rl/$EXP && git diff --cached --quiet || { git commit -q -m "results: $EXP update $(date +%H:%M)" && git push -q origin main; }
-  else echo "$(date +%H:%M) skipped push: a result file matched the secret scan"; fi
+  cd "$REPO"
+  for E in $EXP; do
+    mkdir -p results/rl/$E
+    for f in $(uvx -q modal volume ls glimmer-runs /rl/$E 2>/dev/null | grep -o "$E-s[0-9]*-r[0-9]*.jsonl\|steps.jsonl\|config.json\|test.json"); do
+      uvx -q modal volume get --force glimmer-runs /rl/$E/$f results/rl/$E/$f >/dev/null 2>&1; done
+    if ! grep -rIl -E "sk-ant-|tml-[A-Za-z0-9]{20}|@gmail|/Users/" results/rl/$E >/dev/null; then
+      git add results/rl/$E && git diff --cached --quiet || { git commit -q -m "results: $E update $(date +%H:%M)" && git push -q origin main; }
+    else echo "$(date +%H:%M) skipped push: a result file in $E matched the secret scan"; fi
+  done
   python3 viewer/build.py >/dev/null
   cd "$LIVE" && git fetch -q origin && git reset -q --hard origin/main
   cp "$REPO"/viewer/site/data/*.json posts/weight-space-programming/traces/data/

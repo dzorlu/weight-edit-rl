@@ -5,3 +5,4 @@ viewer/site/
 *.safetensors
 *.npy
 .env
+results/rl/.tested_*
