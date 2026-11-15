@@ -8,9 +8,12 @@
   </div>
   <div class="we-code" id="we-code"></div>
   <div class="we-row">
+    <div class="we-block"><div class="we-cap"><code>x</code> [4]</div><div class="we-sum" id="we-X"></div></div>
+    <div class="we-op">*</div>
     <div class="we-block"><div class="we-cap"><code>W</code> after the edit [4 × 3]</div><div class="we-grid" id="we-W"></div></div>
-    <div class="we-op">* <code>u</code><br>× <code>x</code><br>→</div>
-    <div class="we-block"><div class="we-cap">contribution [4 × 3]</div><div class="we-grid" id="we-C"></div></div>
+    <div class="we-op">→</div>
+    <div class="we-block"><div class="we-cap"><code>x * W</code> [4 × 3]</div><div class="we-grid" id="we-C"></div></div>
+    <div class="we-op">· <code>u</code><br>→</div>
     <div class="we-block"><div class="we-cap">unit total</div><div class="we-sum" id="we-S"></div></div>
   </div>
   <div class="we-total" id="we-total"></div>
@@ -22,7 +25,7 @@
 .we-btns button{font:13px -apple-system,system-ui,sans-serif;padding:5px 10px;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
 .we-btns button[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .we-code{font:12.5px ui-monospace,Menlo,monospace;color:var(--muted);margin-bottom:10px;min-height:1.4em}
-.we-row{display:flex;gap:10px;align-items:flex-start;min-width:520px}
+.we-row{display:flex;gap:8px;align-items:flex-start;min-width:640px}
 .we-block{display:flex;flex-direction:column;gap:4px}
 .we-cap{font-size:13px;color:var(--muted);height:20px;white-space:nowrap}
 .we-grid{display:grid;grid-template-columns:repeat(3,48px);gap:3px}
@@ -30,7 +33,7 @@
 .we .c{height:34px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;border-radius:4px;color:var(--ink)}
 .we-sum .c{border:1px solid var(--line);min-width:52px;font-weight:600}
 .we .c.chg{box-shadow:0 0 0 2px var(--accent)}
-.we-op{align-self:center;text-align:center;color:var(--muted);font-size:13px;padding-top:24px;min-width:40px}
+.we-op{align-self:flex-start;margin-top:80px;text-align:center;color:var(--muted);font-size:13px;min-width:28px}
 .we-total{margin-top:12px;font-size:14px}
 </style>
 <script>
@@ -48,12 +51,13 @@
     `color-mix(in srgb, ${v > 0 ? 'var(--pos)' : 'var(--neg)'} ${Math.round(20 + 70 * Math.min(1, Math.abs(v) / vmax))}%, transparent)`;
   const $ = id => document.getElementById(id);
   const mk = (parent, n) => Array.from({ length: n }, () => { const c = document.createElement('div'); c.className = 'c'; parent.appendChild(c); return c; });
+  mk($('we-X'), 4).forEach((c, j) => { c.textContent = fmt(x[j]); });
   const cW = mk($('we-W'), 12), cC = mk($('we-C'), 12), cS = mk($('we-S'), 4);
   const total0 = W0.reduce((a, r, j) => a + x[j] * r.reduce((b, v, d) => b + v * u[d], 0), 0);
   function show(k) {
     const W = edits[k].f(W0);
-    const C = W.map((r, j) => r.map((v, d) => x[j] * v * u[d]));
-    const S = C.map(r => r.reduce((a, b) => a + b, 0)), tot = S.reduce((a, b) => a + b, 0);
+    const C = W.map((r, j) => r.map(v => x[j] * v));
+    const S = C.map(r => r.reduce((a, v, d) => a + v * u[d], 0)), tot = S.reduce((a, b) => a + b, 0);
     W.forEach((r, j) => r.forEach((v, d) => {
       const i = j * 3 + d, ch = Math.abs(v - W0[j][d]) > 1e-9;
       cW[i].textContent = fmt(v); cW[i].style.background = tint(v, 2); cW[i].classList.toggle('chg', ch);
