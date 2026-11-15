@@ -28,10 +28,17 @@ def cell(x_, y, v, vmax=2.0, w=38, h=26):
 SX = 90                                     # residual stream
 t(SX, 18, "residual stream", "h", "middle")
 o.append(f'<rect x="{SX - 70}" y="28" width="140" height="30" rx="5" class="box"/>'); t(SX, 48, f"h0 = {vec(h0)}", "code", "middle")
-o.append(f'<line x1="{SX}" y1="58" x2="{SX}" y2="318" class="stream"/>')
+o.append(f'<line x1="{SX}" y1="58" x2="{SX}" y2="398" class="stream"/>')
 # x
-Y = 100
-t(200, Y - 14, "x [4]", "s", "middle")
+# gate and up projections: h0 [3] -> x [4]
+o.append(f'<rect x="150" y="84" width="300" height="50" rx="6" class="box"/>')
+t(160, 78, "W_gate, W_up [3 × 4]: from the stream to the units", "s")
+t(300, 106, "x = silu(h0 @ W_gate) * (h0 @ W_up)", "code", "middle")
+t(300, 124, "[3] @ [3 × 4] → [4]", "tiny", "middle")
+arrow(SX, 109, 146, 109)
+arrow(203, 134, 203, 152)
+Y = 180
+t(230, Y - 14, "x [4]", "s", "middle")
 for j, v in enumerate(x):
     cell(181, Y + j * 30, v, 2.0)
     t(172, Y + j * 30 + 17, f"unit {j}", "tiny", "end")
@@ -48,9 +55,9 @@ t(446, Y + 51, "m = x @ W", "code"); t(446, Y + 69, f"  = {vec(m)}", "code")
 o.append(f'<path d="M 470 {Y + 80} C 470 {Y + 190}, 300 {Y + 190}, {SX + 13} {Y + 190}" class="ar" fill="none" marker-end="url(#hd)"/>')
 o.append(f'<circle cx="{SX}" cy="{Y + 190}" r="11" class="addc"/>'); t(SX, Y + 196, "+", "op", "middle")
 t(SX + 18, Y + 214, f"h = h0 + m = {vec(h)}", "code")
-arrow(SX, 318, SX, 344)
+arrow(SX, 398, SX, 424)
 # U
-UY = 360
+UY = 440
 t(SX + 10, UY - 8, "U [3 × 3]: one column per token", "s")
 o.append(f'<rect x="{SX - 70}" y="{UY}" width="250" height="122" rx="6" class="box"/>')
 for k, name in enumerate(TOK):
@@ -74,7 +81,7 @@ t(SX - 70, LY + 130, f"\"Wait\" scores highest. Its logit is h · u = h0·u + m�
 t(SX - 70, LY + 148, f"m·u = {f(m @ u)} is the layer's part. Figure 2 splits it over the units and weights.", "tiny")
 
 STYLE = open(os.path.join(os.path.dirname(__file__), "two_layer_figure.py")).read().split('STYLE = """', 1)[1].split('"""', 1)[0]
-svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 730" role="img"><title>One layer: activations x times W give m, added to the residual stream; U turns the result into one logit per token</title>'
+svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 830" role="img"><title>One layer: activations x times W give m, added to the residual stream; U turns the result into one logit per token</title>'
        f'{STYLE}{"".join(o)}</svg>')
 os.makedirs(os.path.join(os.path.dirname(__file__), "figs"), exist_ok=True)
 open(os.path.join(os.path.dirname(__file__), "figs", "diag1.svg"), "w").write(svg)
