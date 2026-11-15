@@ -66,7 +66,7 @@ def state_of(r):
 def step_row(r, s, n, note):
     rids = [x["rid"] for x in s.get("rollouts", [])]
     tests = [r["test"][i]["paired"]["diff_pp"] for i in rids if i in r["test"] and r["test"][i].get("paired")]
-    mt = f"{sum(tests) / len(tests):+.1f} ({len(tests)} edits)" if tests else "pending"
+    mt = f"{sum(tests) / len(tests):+.1f} ({len(tests)} edits)" if tests else "being scored"
     tl = ", ".join(f"{r['test'][i]['paired']['diff_pp']:+.1f}" if i in r["test"] and r["test"][i].get("paired") else ("no edit" if i in r["test"] else "–") for i in rids)
     rw = s.get("rewards") or []
     return (f"<tr><td>{n}</td><td>{sgn(s.get('mean_reward'))}</td><td>{', '.join(sgn(x) for x in rw)}</td>"
@@ -90,7 +90,7 @@ def step_detail(r, s, n, note):
                  tens=len(x.get("edited_tensors") or []), turns=x.get("turns"), minutes=x.get("minutes"),
                  fwd=x.get("forward_used"), py=x.get("python_used"), web=x.get("web_used"))
         vals.append(v)
-        tt = f"{t:+.1f}" if t is not None else ("no edit" if x["rid"] in r["test"] else "pending")
+        tt = f"{t:+.1f}" if t is not None else ("no edit" if x["rid"] in r["test"] else "being scored")
         pct = lambda a: "–" if a is None else f"{a * 100:.1f}%"
         p.append(f"<tr><td><a href='../../traces/#rl-{e(x['rid'])}'>{int(x['rid'].rsplit('-r', 1)[1]) + 1}</a></td><td>{sgn(v['reward'])}</td><td>{tt}</td>"
                  f"<td>{pct(v['acc'])}</td><td>{pct(v['cap'])}</td><td>{v['tens']}</td><td>{v['turns']}</td><td>{v['minutes']}</td>"
@@ -100,7 +100,7 @@ def step_detail(r, s, n, note):
         return sum(xs) / len(xs) if xs else None
     f1 = lambda k: "–" if mean(k) is None else f"{mean(k):.1f}"
     tm = mean("test")
-    p.append(f"<tr class='avg'><td>Mean</td><td>{sgn(mean('reward'))}</td><td>{'pending' if tm is None else f'{tm:+.1f}'}</td>"
+    p.append(f"<tr class='avg'><td>Mean</td><td>{sgn(mean('reward'))}</td><td>{'being scored' if tm is None else f'{tm:+.1f}'}</td>"
              f"<td>{'–' if mean('acc') is None else f'{mean(chr(97)+chr(99)+chr(99)) * 100:.1f}%'}</td><td>{'–' if mean('cap') is None else f'{mean(chr(99)+chr(97)+chr(112)) * 100:.1f}%'}</td>"
              f"<td>{f1('tens')}</td><td>{f1('turns')}</td><td>{f1('minutes')}</td><td>{f1('fwd')}</td><td>{f1('py')}</td><td>{f1('web')}</td><td></td></tr>")
     p.append("</table></div>")
@@ -114,7 +114,7 @@ def run_page(r):
     p = [f"<h1>RL run: {e(r['name'])}</h1>",
          f"<div class='meta'>Updated {STAMP} · <a href='../'>all runs</a> · <a href='../../'>map of the edits</a> · <a href='../../traces/'>trajectories</a> · "
          f"<a href='../../changelog/'>changelog</a> · <a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(r['name'])}'>logs</a></div>",
-         f"<p>{NOTES.get(r['name'], '').capitalize()}. {rel} State: {state_of(r)}.</p>", INTRO, "<h2>Steps</h2>", HEAD]
+         f"<p>{NOTES.get(r['name'], '').capitalize()}. {rel} State: {state_of(r)}.</p>", INTRO, "<h2>Steps</h2><p class='meta'>Every step listed here has finished: all rollouts scored and the training update applied. "Being scored" means the step's edits are still running on MATH-500.</p>", HEAD]
     if r["parent"]:
         par = byname.get(r["parent"])
         for s in (par["done"][:r["offset"]] if par else []):
