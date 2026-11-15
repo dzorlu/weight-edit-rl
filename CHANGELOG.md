@@ -9,7 +9,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 - `--task` on `rl`, `evaluate` and `sweep`; `Target`/`PackedTarget` take `task` (which practice folder is `/practice`); `gen_base` and `make_base` take `task`.
 - `rl.loop::prep_task --task <t>`: the sample (`prep_task_data`, CPU), then the original answers: baseline (512) and SUMMARY.txt, reward set, select, confirm splits, held-out set. `--quick` skips the confirm splits; `--reward-items k` and `--heldout k` shrink the reward set and the held-out cache; `--gpu` picks the GPU type.
 - Why: to test whether the editor's gains carry over to a math dataset it has never practised on, on the same model.
-- Tested: the sample built (counts above); the filter on hand-made cases; prompts for math unchanged. Prep launched with `--quick --reward-items 64 --heldout 250` (proof of concept: evaluations use `--reward-items 64 --limit 250`).
+- Tested: the sample built (counts above); the filter on hand-made cases; prompts for math unchanged. Prep run with `--quick --reward-items 64 --heldout 250` (proof of concept: evaluations use `--reward-items 64 --limit 250`).
+- Qwen3.5-0.8B as downloaded on this task (prep, 22 minutes on one A100): baseline 512 answers 7.0% correct, 94.3% cut at 8,192 tokens, of the finished answers 93.1% correct; "Wait" 12.6 per 1,000 tokens in cut answers against 2.3 in finished ones. Reward set (64 × 2) 7.0%, select 5.9%, first 250 held-out problems 8.2%. MATH for comparison: ~7% correct, ~93% cut. The difficulty and the failure are the same.
 
 **Training stopped; evaluations** (09:00). `drgrpo12` stopped during its first step (no update taken); `rebase1` finished after step 7 (mean −3.5). Evaluations launched, all on held-out sets the editor never sees:
 1. Editor: untrained vs trained (`rebase2-step5`), Qwen as downloaded, edits scored on MATH-500, 8 rollouts each (two groups of 4: `untrained-orig-math500`, `-b`; `rebase2s8-orig-math500`, `-b`).
