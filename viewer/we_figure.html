@@ -1,0 +1,70 @@
+<!-- Interactive edit figure: same W, u, x as the contribution figure; buttons apply an edit to W. Spliced into posts/weight-edits/index.html. -->
+<div class="we" id="we">
+  <div class="we-btns" role="group" aria-label="Edit">
+    <button data-k="orig" aria-pressed="true">original</button>
+    <button data-k="zero" aria-pressed="false">zero unit 2's row</button>
+    <button data-k="flip" aria-pressed="false">flip unit 1's row</button>
+    <button data-k="dir" aria-pressed="false">remove direction u from every row</button>
+  </div>
+  <div class="we-code" id="we-code"></div>
+  <div class="we-row">
+    <div class="we-block"><div class="we-cap"><code>W</code> after the edit [4 × 3]</div><div class="we-grid" id="we-W"></div></div>
+    <div class="we-op">* <code>u</code><br>× <code>x</code><br>→</div>
+    <div class="we-block"><div class="we-cap">contribution [4 × 3]</div><div class="we-grid" id="we-C"></div></div>
+    <div class="we-block"><div class="we-cap">unit total</div><div class="we-sum" id="we-S"></div></div>
+  </div>
+  <div class="we-total" id="we-total"></div>
+</div>
+<noscript><p>The figure needs JavaScript. Layer totals: original 2.5; zero unit 2's row −1.25; flip unit 1's row 5.5; remove direction u 0.</p></noscript>
+<style>
+.we{margin:16px 0 8px;padding:12px;border:1px solid var(--line);border-radius:8px;overflow-x:auto}
+.we-btns{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.we-btns button{font:13px -apple-system,system-ui,sans-serif;padding:5px 10px;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+.we-btns button[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.we-code{font:12.5px ui-monospace,Menlo,monospace;color:var(--muted);margin-bottom:10px;min-height:1.4em}
+.we-row{display:flex;gap:10px;align-items:flex-start;min-width:520px}
+.we-block{display:flex;flex-direction:column;gap:4px}
+.we-cap{font-size:13px;color:var(--muted);height:20px;white-space:nowrap}
+.we-grid{display:grid;grid-template-columns:repeat(3,48px);gap:3px}
+.we-sum{display:grid;grid-template-rows:repeat(4,34px);gap:3px}
+.we .c{height:34px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;border-radius:4px;color:var(--ink)}
+.we-sum .c{border:1px solid var(--line);min-width:52px;font-weight:600}
+.we .c.chg{box-shadow:0 0 0 2px var(--accent)}
+.we-op{align-self:center;text-align:center;color:var(--muted);font-size:13px;padding-top:24px;min-width:40px}
+.we-total{margin-top:12px;font-size:14px}
+</style>
+<script>
+(function () {
+  const W0 = [[0.5, 0, 1], [-1, 0.5, 0], [2, 1, 0.5], [0, -1, 1]], u = [1, 0.5, 0], x = [1, 2, 1.5, 0.5];
+  const uu = u.reduce((a, v) => a + v * v, 0);
+  const edits = {
+    orig: { code: 'no edit', f: W => W },
+    zero: { code: 'W[2] = 0', f: W => W.map((r, j) => j === 2 ? r.map(() => 0) : r) },
+    flip: { code: 'W[1] = −W[1]', f: W => W.map((r, j) => j === 1 ? r.map(v => -v) : r) },
+    dir: { code: 'W = W − outer(W @ u, u) / (u · u)     every row loses its part along u', f: W => W.map(r => { const s = r.reduce((a, v, d) => a + v * u[d], 0) / uu; return r.map((v, d) => v - s * u[d]); }) },
+  };
+  const fmt = v => (Math.abs(v) < 1e-9 ? 0 : Math.round(v * 100) / 100).toString().replace('-', '−');
+  const tint = (v, vmax) => Math.abs(v) < 1e-9 ? 'var(--code)' :
+    `color-mix(in srgb, ${v > 0 ? 'var(--pos)' : 'var(--neg)'} ${Math.round(20 + 70 * Math.min(1, Math.abs(v) / vmax))}%, transparent)`;
+  const $ = id => document.getElementById(id);
+  const mk = (parent, n) => Array.from({ length: n }, () => { const c = document.createElement('div'); c.className = 'c'; parent.appendChild(c); return c; });
+  const cW = mk($('we-W'), 12), cC = mk($('we-C'), 12), cS = mk($('we-S'), 4);
+  const total0 = W0.reduce((a, r, j) => a + x[j] * r.reduce((b, v, d) => b + v * u[d], 0), 0);
+  function show(k) {
+    const W = edits[k].f(W0);
+    const C = W.map((r, j) => r.map((v, d) => x[j] * v * u[d]));
+    const S = C.map(r => r.reduce((a, b) => a + b, 0)), tot = S.reduce((a, b) => a + b, 0);
+    W.forEach((r, j) => r.forEach((v, d) => {
+      const i = j * 3 + d, ch = Math.abs(v - W0[j][d]) > 1e-9;
+      cW[i].textContent = fmt(v); cW[i].style.background = tint(v, 2); cW[i].classList.toggle('chg', ch);
+      cC[i].textContent = fmt(C[j][d]); cC[i].style.background = tint(C[j][d], 3); cC[i].classList.toggle('chg', ch);
+    }));
+    S.forEach((v, j) => { cS[j].textContent = fmt(v); cS[j].style.background = tint(v, 3); });
+    $('we-code').textContent = edits[k].code;
+    $('we-total').innerHTML = `Layer total: <b>${fmt(tot)}</b>` + (k === 'orig' ? '.' : `, was ${fmt(total0)}. The "Wait" logit changes by ${fmt(tot - total0)}.`);
+    document.querySelectorAll('#we .we-btns button').forEach(b => b.setAttribute('aria-pressed', b.dataset.k === k));
+  }
+  document.querySelectorAll('#we .we-btns button').forEach(b => b.addEventListener('click', () => show(b.dataset.k)));
+  show('orig');
+})();
+</script>
