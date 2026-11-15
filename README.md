@@ -113,6 +113,13 @@ uvx modal run --detach -m rl.loop::evaluate --name nolib1-s3-gsm8k --checkpoint 
   --base original --n 8 --dataset gsm8k_test
 ```
 
+```bash
+# score a starting model itself (a rebase tag) against Qwen as downloaded on --dataset, paired by problem;
+# each model's answers come from its per-(model, set) cache and are generated only when missing.
+# Output: /runs/eval/base-<tag>-<dataset>.json (accuracies, paired gain, SE, flips)
+uvx modal run --detach -m rl.loop::score_base --base rebase2-k2 --dataset math500
+```
+
 `evaluate --edits rl/<exp>/work/<rid>,...` scores existing edits without new rollouts. Tested end to end at small scale on 14 November 2026: one rollout from `nolib1-step2` with a 6-minute cap submitted an edit (reward-set gain +34.0) that was then scored on 5 GSM8K test problems.
 
 Measured cost of one full-length search: about 100 minutes on one L40S (about $3) plus under $1 of Tinker.
