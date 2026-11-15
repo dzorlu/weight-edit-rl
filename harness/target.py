@@ -31,6 +31,9 @@ TARGETS = {
                      "pack_util": {"edited": 0.30, "original": 0.15, "forward_model": 0.13}, "pack_tf_tokens": 8192},
     "qwen3.5-2b": {"hf": "Qwen/Qwen3.5-2B", "util": {"edited": 0.33, "original": 0.33}, "tf_tokens": 16000,
                    "pack_util": {"edited": 0.25, "original": 0.16, "forward_model": 0.22}, "pack_tf_tokens": 4096},
+    # pretrained only (no post-training): can the editor improve a model before instruction tuning? Same architecture as the 0.8B.
+    "qwen3.5-0.8b-base": {"hf": "Qwen/Qwen3.5-0.8B-Base", "util": {"edited": 0.40, "original": 0.40}, "tf_tokens": 40000,
+                          "pack_util": {"edited": 0.30, "original": 0.15, "forward_model": 0.13}, "pack_tf_tokens": 8192},
 }
 DEFAULT_TARGET = "qwen3.5-0.8b"
 TARGET = TARGETS[DEFAULT_TARGET]["hf"]
