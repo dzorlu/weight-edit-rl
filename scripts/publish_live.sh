@@ -2,7 +2,7 @@
 # Every 30 minutes: pull an RL run's logs, push them to this repo, and publish the live run page and the
 # trajectory viewer to the website. Usage: scripts/publish_live.sh <exp> [max-hours]
 # RUNS (optional) lists every run the status page shows, e.g. RUNS="hero3 nolib1:hero3@1"; defaults to <exp>.
-# The site is published from a separate worktree of the site repo, so the site's main branch gets no update commits.
+# The site is published from a separate worktree of the site repo; the run page and trajectory data are committed to its main first.
 EXP=$1; MAXH=${2:-16}; REPO=$(cd "$(dirname "$0")/.." && pwd); SITE=${SITE:-$HOME/repos/dzorlu.github.io}; LIVE=$HOME/repos/wt/dzorlu.github.io-live
 START=$(date +%s)
 [ -d "$LIVE" ] || (cd "$SITE" && git fetch -q origin && git worktree add -q --detach "$LIVE" origin/main)
@@ -24,6 +24,12 @@ s = re.sub(r'(<script id="index" type="application/json">)(.*?)(</script>)', lam
 open(p, "w").write(s)
 PY
   mkdir -p posts/weight-edits/run && (cd "$REPO" && python3 viewer/run_status.py "$LIVE/posts/weight-edits/run/index.html" ${RUNS:-$EXP} >/dev/null)
+  # Commit the run page and trajectory data to the site's main, so a publish by anyone else includes them.
+  git add posts/weight-edits/run posts/weight-edits/traces
+  if ! git diff --cached --quiet; then
+    git -c user.name="$(git -C "$SITE" config user.name)" -c user.email="$(git -C "$SITE" config user.email)" commit -q -m "weight-edits: run page and trajectories $(date +%H:%M)" \
+      && git push -q origin HEAD:main || echo "$(date +%H:%M) push to the site's main failed"
+  fi
   quarto publish gh-pages --no-prompt --no-browser >/tmp/publish_live.log 2>&1 && echo "$(date +%H:%M) published" || echo "$(date +%H:%M) publish failed: $(tail -2 /tmp/publish_live.log)"
   grep -q '"event": "done"\|"event": "stopped"' "$REPO/results/rl/$EXP/steps.jsonl" 2>/dev/null && { echo "run finished"; exit 0; }
   [ $(( ($(date +%s) - START) / 3600 )) -ge $MAXH ] && { echo "max hours reached"; exit 0; }
