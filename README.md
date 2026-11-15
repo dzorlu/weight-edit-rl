@@ -17,7 +17,7 @@ Target: Qwen3.5-0.8B. Task: math. One search per row. Test set MATH-500, 1,000 a
 | Inkling 2 Small, first search | 6.6% | 20.2% | +13.6 |
 | Inkling 2 Small, second search | 6.6% | 11.8% | +5.2 |
 
-Every edit tried so far, sorted by kind: [a map of weight edits](https://tinkerings.dev/posts/weight-edits/). Every search and rollout, turn by turn: [trajectories](https://tinkerings.dev/posts/weight-edits/traces/).
+Every edit tried so far, sorted by kind: [a map of weight edits](https://tinkerings.dev/posts/weight-space-programming/). Every search and rollout, turn by turn: [trajectories](https://tinkerings.dev/posts/weight-space-programming/traces/).
 
 Qwen3.5-0.8B fails at math in one way: it writes "Wait..." and rechecks until it runs out of tokens. Every gain above comes from stopping that. Transcripts and scores are in `results/searches/`.
 
@@ -32,7 +32,7 @@ Inkling 2 Small trained with RL as the editor. 8 rollouts per step, 32 forward p
 
 Step 1's edits scored on the test set (MATH-500, 6.6% before) track their rewards: +0.6, +11.1, +16.7, +15.2, +32.8, no edit, +2.5, +29.4. The best, rollout 5, reaches 39.4%, above Opus's 34.8%.
 
-Step 2's gain cannot yet be credited to training alone: its rollouts read step 1's notes, which included the best rollout's recipe, and all 8 copied it. Analysis: [`results/rl/hero3/analysis_step1_vs_step2.md`](results/rl/hero3/analysis_step1_vs_step2.md). A second run, `nolib1`, resumes from step 1's checkpoint with no notes and no web tools; its first step measures the update alone. Live: [run page](https://tinkerings.dev/posts/weight-edits/run/).
+Step 2's gain cannot yet be credited to training alone: its rollouts read step 1's notes, which included the best rollout's recipe, and all 8 copied it. Analysis: [`results/rl/hero3/analysis_step1_vs_step2.md`](results/rl/hero3/analysis_step1_vs_step2.md). A second run, `nolib1`, resumes from step 1's checkpoint with no notes and no web tools; its first step measures the update alone. Live: [run page](https://tinkerings.dev/posts/weight-space-programming/run/).
 
 ## How it works
 

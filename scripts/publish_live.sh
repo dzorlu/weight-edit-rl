@@ -15,17 +15,17 @@ while true; do
   else echo "$(date +%H:%M) skipped push: a result file matched the secret scan"; fi
   python3 viewer/build.py >/dev/null
   cd "$LIVE" && git fetch -q origin && git reset -q --hard origin/main
-  cp "$REPO"/viewer/site/data/*.json posts/weight-edits/traces/data/
-  python3 - "$REPO/viewer/site/index.html" posts/weight-edits/traces/index.html <<'PY'
+  cp "$REPO"/viewer/site/data/*.json posts/weight-space-programming/traces/data/
+  python3 - "$REPO/viewer/site/index.html" posts/weight-space-programming/traces/index.html <<'PY'
 import re, sys
 new = re.search(r'<script id="index" type="application/json">(.*?)</script>', open(sys.argv[1]).read(), re.S).group(1)
 p = sys.argv[2]; s = open(p).read()
 s = re.sub(r'(<script id="index" type="application/json">)(.*?)(</script>)', lambda m: m.group(1) + new + m.group(3), s, flags=re.S)
 open(p, "w").write(s)
 PY
-  mkdir -p posts/weight-edits/run && (cd "$REPO" && python3 viewer/run_status.py "$LIVE/posts/weight-edits/run" ${RUNS:-$EXP} >/dev/null)
+  mkdir -p posts/weight-space-programming/run && (cd "$REPO" && python3 viewer/run_status.py "$LIVE/posts/weight-space-programming/run" ${RUNS:-$EXP} >/dev/null)
   # Commit the run page and trajectory data to the site's main, so a publish by anyone else includes them.
-  git add posts/weight-edits/run posts/weight-edits/traces
+  git add posts/weight-space-programming/run posts/weight-space-programming/traces
   if ! git diff --cached --quiet; then
     git -c user.name="$(git -C "$SITE" config user.name)" -c user.email="$(git -C "$SITE" config user.email)" commit -q -m "weight-edits: run page and trajectories $(date +%H:%M)" \
       && git push -q origin HEAD:main || echo "$(date +%H:%M) push to the site's main failed"
