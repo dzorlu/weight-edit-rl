@@ -58,14 +58,23 @@ for k, name in enumerate(TOK):
     for d in range(3):
         cell(SX - 40 + k * 80, UY + 26 + d * 30, U[d, k], 1.0)
 o.append(f'<rect x="{SX - 44}" y="{UY + 22}" width="46" height="96" rx="4" class="sel"/>')
-t(SX + 190, UY + 64, "u = U[:, Wait] = " + vec(u), "code")
-t(SX + 190, UY + 84, "the outlined column", "tiny")
-t(SX - 70, UY + 150, f"logits = h @ U = {vec(logits)}", "code")
-t(SX - 70, UY + 170, f"\"Wait\" scores highest. Its logit is h · u = h0·u + m·u = {f(h0 @ u)} + {f(m @ u)} = {f(logits[0])}.", "tiny")
-t(SX - 70, UY + 188, f"m·u = {f(m @ u)} is the layer's part. Figure 2 splits it over the units and weights.", "tiny")
+t(SX - 70, UY + 142, "u = U[:, Wait] = " + vec(u) + ", the outlined column", "tiny")
+# logits as their own vector box
+LX = SX + 330
+arrow(SX + 180, UY + 70, LX - 6, UY + 70)
+t(SX + 186, UY + 62, "h @ U", "code")
+t(LX, UY - 8, "logits [3]: one per token", "s")
+o.append(f'<rect x="{LX}" y="{UY}" width="250" height="80" rx="6" class="box"/>')
+for k, name in enumerate(TOK):
+    t(LX + 24 + k * 80 + 25, UY + 18, name, "tiny", "middle")
+    cell(LX + 24 + k * 80, UY + 26, logits[k], 3.0, w=50)
+o.append(f'<rect x="{LX + 20}" y="{UY + 22}" width="58" height="34" rx="4" class="sel"/>')
+t(SX - 70, UY + 168, f"h [3] @ U [3 × 3] = logits [3] = {vec(logits)}", "code")
+t(SX - 70, UY + 190, f"\"Wait\" scores highest. Its logit is h · u = h0·u + m·u = {f(h0 @ u)} + {f(m @ u)} = {f(logits[0])}.", "tiny")
+t(SX - 70, UY + 208, f"m·u = {f(m @ u)} is the layer's part. Figure 2 splits it over the units and weights.", "tiny")
 
 STYLE = open(os.path.join(os.path.dirname(__file__), "two_layer_figure.py")).read().split('STYLE = """', 1)[1].split('"""', 1)[0]
-svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 560" role="img"><title>One layer: activations x times W give m, added to the residual stream; U turns the result into one logit per token</title>'
+svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 590" role="img"><title>One layer: activations x times W give m, added to the residual stream; U turns the result into one logit per token</title>'
        f'{STYLE}{"".join(o)}</svg>')
 os.makedirs(os.path.join(os.path.dirname(__file__), "figs"), exist_ok=True)
 open(os.path.join(os.path.dirname(__file__), "figs", "diag1.svg"), "w").write(svg)
