@@ -20,7 +20,7 @@ Outputs: /runs/rl/<exp>/ on the runs volume (steps.jsonl, one transcript per rol
 import modal
 from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PackedTarget, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval
 from harness.target import weights, offline, _Core, base_dirs, heldout_cache, heldout_rows, start_vllm, stop_proc, EVAL_SETS, prep_eval_set
-from harness.target import TARGETS, DEFAULT_TARGET, target_arch, target_paths, target_dir, prep, summarize
+from harness.target import TARGETS, DEFAULT_TARGET, target_arch, target_paths, target_dir, prep, summarize, TASKS, _check_task
 from harness.prompts import make_prompt, make_guide, tensor_names_text, layer_ranges, QWEN35_08B
 
 MODEL = "thinkingmachines/Inkling-2-Small:peft:262144"  # 256K-context variant; a rollout is one long sequence
@@ -79,7 +79,7 @@ WHAT IS ALREADY KNOWN ABOUT THIS MODEL. You do not need to spend a forward pass 
 Do not use these baseline problems to confirm an edit.
 
 SANDBOX NOTES.
-- Practice ids look like "math/geometry/461" and "gsm8k/2754". /practice/index.tsv lists every problem (id, source, level, subject); /practice/problems.jsonl has the full text and reference solutions. Do not guess ids.
+- {ids} /practice/index.tsv lists every problem (id, source, level, subject); /practice/problems.jsonl has the full text and reference solutions. Do not guess ids.
 - /practice/splits.json holds ready-made disjoint lists of ids: "baseline" (already answered by the original weights, see above), "select" (256 problems for choosing between edits), "confirm_1" and "confirm_2" (256 each, never to be used for a choice), and "extra" (the rest). Use these; do not build your own.
 - Tensor names: {tensors}
 - load(name) returns a float32 torch tensor. save_edit(name, tensor) takes a torch tensor of the same shape; convert numpy arrays with torch.from_numpy(a).float().
@@ -225,10 +225,21 @@ BASE_TEXT = """
 STARTING WEIGHTS. The weights you are given are {name} with an earlier edit already applied. In this session "original weights" means these starting weights: load_original, the cached original answers in /practice and your score all refer to them. Your task is to improve on them."""
 
 
-def editor_prompt(forward_budget, web=False, known=None, rebased=False, arch=None):
-    """The RL editor's prompt; every architecture statement comes from `arch` (target_arch; default Qwen3.5-0.8B)."""
+MATH_MEASURED = "HOW IT WILL BE MEASURED. The 500 problems of MATH-500, 2 samples per problem, separately for original and edited weights."
+MATH_PRACTICE = "2. Practice problems: 3,000 from the MATH training set and 1,500 from the GSM8K training set, each with a reference solution. They are disjoint from the held-out test after normalized text matching."
+MATH_IDS = 'Practice ids look like "math/geometry/461" and "gsm8k/2754".'
+
+
+def editor_prompt(forward_budget, web=False, known=None, rebased=False, arch=None, task="math", n_practice=None):
+    """The RL editor's prompt; every architecture statement comes from `arch` (target_arch; default Qwen3.5-0.8B).
+    task: a key of TASKS; its texts replace the MATH-500 / MATH and GSM8K statements (n_practice: its practice problem count)."""
     arch = arch or QWEN35_08B
+    T = TASKS[_check_task(task)]
     PROMPT, GUIDE = make_prompt(arch), make_guide(arch)
+    for old, new in ((MATH_MEASURED, T["measured"]), (MATH_PRACTICE, T["practice"])):
+        assert old in PROMPT, old
+        if new:
+            PROMPT = PROMPT.replace(old, new.replace("<<N>>", f"{n_practice:,}" if n_practice else "about 3,700"))
     hs, mlp = layer_ranges(arch)
     a, b = PROMPT.index("WHAT COUNTS."), PROMPT.index("WHAT YOU HAVE.")
     body = PROMPT[:a] + GUIDE + "\n\n" + PROMPT[b:]
@@ -251,7 +262,7 @@ def editor_prompt(forward_budget, web=False, known=None, rebased=False, arch=Non
     if known:
         a, b = body.index(DIAG_OLD_START), body.index(SPLIT_OLD_END)  # replaces steps 1 and 2 of the guide
         body = body[:a] + DIAG_NEW.rstrip() + body[b:]
-        extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"], tensors=tensor_names_text(arch))
+        extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"], tensors=tensor_names_text(arch), ids=T["ids"] or MATH_IDS)
     if web:
         extra += WEB_TEXT
     if rebased:
@@ -299,11 +310,13 @@ def opens(rs):
             if w.isalpha(): c[w] += 1
     return c, max(1, toks)
 cc, ct = opens(cut); dc, dt = opens(done)
+LABEL = {"math_train": "MATH", "gsm8k_train": "GSM8K", "cn_k12": "NuminaMath cn_k12"}
+SRCS = ["math_train", "gsm8k_train"] if {r['source'] for r in rows} & {"math_train", "gsm8k_train"} else sorted({r['source'] for r in rows})
 rate = lambda c, t, w: 1000 * c[w] / t
 top = sorted((w for w in cc if cc[w] >= 40), key=lambda w: -(rate(cc, ct, w) + 0.01) / (rate(dc, dt, w) + 0.01))[:8]
 lines = [
  f"- {len(rows)} answers to {len({r['qid'] for r in rows})} practice problems: {pct([r['correct'] for r in rows])}% correct "
- f"({pct([r['correct'] for r in rows if r['source'] == 'math_train'])}% on MATH, {pct([r['correct'] for r in rows if r['source'] == 'gsm8k_train'])}% on GSM8K).",
+ "(" + ", ".join(f"{pct([r['correct'] for r in rows if r['source'] == s])}% on {LABEL.get(s, s)}" for s in SRCS) + ").",
  f"- {pct([r['finish'] == 'length' for r in rows])}% run to the 8,192-token limit and {pct([r['extracted'] is None for r in rows])}% have no boxed answer. Of the answers that finish, {pct([r['correct'] for r in done])}% are correct.",
  "- Words that open a line far more often in the cut-off answers than in the finished ones (per 1,000 tokens, cut-off vs finished): "
  + ", ".join(f"{w} {rate(cc, ct, w):.1f} vs {rate(dc, dt, w):.1f}" for w in top) + ".",
@@ -377,14 +390,14 @@ async def prep_originals(splits: str = "select,confirm_1,confirm_2", target: str
 
 # ----------------------------------------------------------------------------- rebasing: a new starting model
 @app.function(image=offline, volumes={"/weights": weights, "/runs": runs}, timeout=40 * 60, cpu=8, memory=32768)
-def make_base(tag: str, prev_tag: str, edit_run: str, target: str = DEFAULT_TARGET):
+def make_base(tag: str, prev_tag: str, edit_run: str, target: str = DEFAULT_TARGET, task: str = "math"):
     """A starting model `tag`: the starting model `prev_tag` with the edit of /runs/<edit_run>/work/edited applied
     (each edited tensor replaces the one in the weights), plus a practice folder holding the problem files."""
     import json, os, shutil
     from safetensors.torch import load_file, save_file
     runs.reload()
-    src, psrc = base_dirs(prev_tag, target)
-    dst, pdst = base_dirs(tag, target)
+    src, psrc = base_dirs(prev_tag, target, task)
+    dst, pdst = base_dirs(tag, target, task)
     ed = f"/runs/{edit_run}/work/edited"
     edits = {f[:-len(".safetensors")]: load_file(os.path.join(ed, f))["t"] for f in sorted(os.listdir(ed)) if f.endswith(".safetensors")}
     assert edits, f"no edited tensors in {ed}"
@@ -405,24 +418,29 @@ def make_base(tag: str, prev_tag: str, edit_run: str, target: str = DEFAULT_TARG
     for f in ("problems.jsonl", "index.tsv", "splits.json", "README.txt"):
         shutil.copy(os.path.join(psrc, f), os.path.join(pdst, f))
     json.dump({"tag": tag, "prev": prev_tag, "edit_run": edit_run, "tensors": sorted(edits), "target": target},
-              open(f"{target_paths(target)['bases_r']}/{tag}/meta.json", "w"), indent=1)
+              open(f"{target_paths(target, task)['bases_r']}/{tag}/meta.json", "w"), indent=1)
     weights.commit(); runs.commit()
     return sorted(edits)
 
 
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=100 * 60, memory=65536, cpu=8)
-def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2, reward_items: int = 128, target: str = DEFAULT_TARGET, limit: int = 0):
+def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2, reward_items: int = 128, target: str = DEFAULT_TARGET, limit: int = 0,
+             task: str = "math", test_limit: int = 0):
     """The starting model's own answers, generated once and served from cache, as for the downloaded model.
     tag "" is the target as downloaded (prep_target). part 0: the baseline answers and their summary, the reward set,
     the select split. part 1: the two confirm splits. part 2: the test set (only needed for test scoring, so the RL loop
-    does not wait for it). part 3: the test set and gsm8k_test.
+    does not wait for it). part 3: the test set and gsm8k_test. part 4: parts 0, 1 and 2 on one GPU. part 5: part 4 without the
+    confirm splits (a quick prep; the forward tool then generates their original side when asked).
+    test_limit k: only the first k problems of the test set (a cache that serves evaluations with --limit <= k).
+    task (a key of TASKS) other than "math": its practice folder, reward set and held-out set (EVAL_SETS[eval_set]) in place of MATH-500.
     limit k (tests): only the first k problems of each list, written under /runs/data/targets/<target>/_limit_test/, never to a cache."""
     import json, os, threading, time
     runs.reload()
     if not reward_items_json:
-        reward_items_json = json.dumps([json.loads(l) for l in open("/heldout/rl/reward_math.jsonl")][:reward_items])
-    P = target_paths(target)
-    mdir, pdir = base_dirs(tag, target)
+        reward_items_json = json.dumps([json.loads(l) for l in open(TASKS[task]["reward_file"])][:reward_items])
+    P = target_paths(target, task)
+    mdir, pdir = base_dirs(tag, target, task)
+    test_set = TASKS[task]["eval_set"]
     out_pdir = pdir
     reward_path = f"{P['bases_r']}/{tag}/reward_base_{{}}x{reward_n}.json" if tag else P["reward_base"].format(f"{{}}x{reward_n}")
     cache_of = lambda ds: heldout_cache(tag, ds, target)
@@ -456,6 +474,7 @@ def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2
     def test(ds):
         def f():
             its = cut([json.loads(l) for l in open(EVAL_SETS[ds]["file"])])
+            its = its[:test_limit] if test_limit else its
             rows = heldout_rows(8001, "original", its, 2, EVAL_SETS[ds]["grade"])
             write(cache_of(ds), rows)
             out[ds] = round(sum(bool(r["correct"]) for r in rows) / len(rows), 4)
@@ -471,7 +490,9 @@ def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2
     elif part == 1:
         jobs = {n: split(n) for n in ("confirm_1", "confirm_2")}
     elif part == 2:
-        jobs = {"math500": test("math500")}
+        jobs = {test_set: test(test_set)}
+    elif part in (4, 5):
+        jobs = {"baseline": baseline, "reward": reward, **{n: split(n) for n in ("select", "confirm_1", "confirm_2")[:1 if part == 5 else 3]}, test_set: test(test_set)}
     else:
         jobs = {ds: test(ds) for ds in ("math500", "gsm8k_test")}
     ths = [threading.Thread(target=f, name=n) for n, f in jobs.items()]
@@ -490,8 +511,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                  reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = "",
                  rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "",
                  mode: str = "rl", eval_dataset: str = "math500", eval_limit: int = 0, eval_parallel: int = 4,
-                 advantage: str = "grpo", adv_scale: float = 0.10, target: str = DEFAULT_TARGET):
+                 advantage: str = "grpo", adv_scale: float = 0.10, target: str = DEFAULT_TARGET, task: str = "math"):
     """target: a key of harness.target.TARGETS; the prompt, tools, caches and starting models are that target's.
+    task: a key of harness.target.TASKS; the practice folder, reward set and prompt wording are that task's.
     start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
     mode "eval" (rl.loop::evaluate): one group of rollouts from `start_from` (a state or sampler path; "" is the untrained
     editor) with no training update, written to /runs/eval/<exp>/; every submitted edit is then scored on `eval_dataset`.
@@ -530,14 +552,16 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         tc = await asyncio.to_thread(lambda: svc.create_training_client_from_state(start_from).result())
     else:
         tc = await asyncio.to_thread(lambda: svc.create_lora_training_client(base_model=MODEL, rank=32).result())
-    items = [json.loads(l) for l in open("/heldout/rl/reward_math.jsonl")][:reward_items]
+    _check_task(task)
+    items = [json.loads(l) for l in open(TASKS[task]["reward_file"])][:reward_items]
     items_json = json.dumps(items)
     arch = target_arch(target)  # from the target's config.json and safetensors headers
-    TP = target_paths(target)
+    TP = target_paths(target, task)
     pdir_of = lambda tag: f"{TP['bases_r']}/{tag}/practice" if tag else TP["practice"]
     bm = f"{pdir_of('')}/baseline/meta.json"
     known = json.load(open(bm)) if os.path.exists(bm) else None
-    prompt_text = editor_prompt(forward_budget, web, known, arch=arch)
+    n_practice = sum(1 for _ in open(f"{pdir_of('')}/problems.jsonl"))
+    prompt_text = editor_prompt(forward_budget, web, known, arch=arch, task=task, n_practice=n_practice)
     tools = tools_for(arch) + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
     lib_dir = f"{d}/_library" if evaluating else f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
     os.makedirs(lib_dir, exist_ok=True)
@@ -558,7 +582,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                     open(path, "a").write("\n".join(add) + "\n")
             elif not os.path.exists(path) or len(text) > os.path.getsize(path):
                 open(path, "w").write(text)
-    json.dump({"exp": exp, "model": MODEL, "target": target, "arch": {k: v for k, v in arch.items() if k != "dir"}, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
+    json.dump({"exp": exp, "model": MODEL, "target": target, "task": task, "arch": {k: v for k, v in arch.items() if k != "dir"}, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
                "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "advantage": advantage, "adv_scale": adv_scale, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
                "rebase_every": rebase_every, "start_base": start_base, "update_check": update_check, "start_from": start_from,
                "baseline_given": bool(known), "mode": mode, "eval_dataset": eval_dataset if evaluating else None, "eval_limit": eval_limit,
@@ -585,10 +609,10 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             if os.path.exists(base_cache):
                 rows = json.load(open(base_cache))
             else:
-                rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base", target=target).reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
+                rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base", target=target, task=task).reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
                 json.dump(rows, open(base_cache, "w"))
         ok = {(r["qid"], r["sample"]): r["correct"] for r in rows}
-        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch), "ok": ok, "acc": sum(ok.values()) / len(ok)}
+        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice), "ok": ok, "acc": sum(ok.values()) / len(ok)}
         slog({"event": "reward_base", "base": tag, "answers": len(ok), "accuracy": round(B["acc"], 4),
               "hit_cap": round(sum(r["finish"] == "length" for r in rows) / len(rows), 4), "seconds": round(time.time() - t)})
         return B
@@ -604,10 +628,10 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         t0 = time.time()
         deadline = min(t0 + rollout_minutes * 60, run_deadline)
         if rollouts_per_gpu > 1:  # one container per gid; every call names the rollout
-            obj = PackedTarget.with_options(scaledown_window=300)(gid=gid, base=B["tag"], target=target)
+            obj = PackedTarget.with_options(scaledown_window=300)(gid=gid, base=B["tag"], target=target, task=task)
             call = lambda m, *a: getattr(obj, m).remote.aio(rid, *a)
         else:
-            obj = Target.with_options(scaledown_window=300)(rid=rid, base=B["tag"], target=target)
+            obj = Target.with_options(scaledown_window=300)(rid=rid, base=B["tag"], target=target, task=task)
             call = lambda m, *a: getattr(obj, m).remote.aio(*a)
         n_repaired = 0
         messages = renderer.create_conversation_prefix_with_tools(tools, system_prompt="")  # Inkling's own tool-call format
@@ -910,9 +934,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             n_base += 1
             tag, t3 = f"{exp}-k{n_base}", time.time()
             try:
-                tensors = await make_base.remote.aio(tag, B["tag"], f"rl/{exp}/work/{info['rid']}", target)
-                parts = await asyncio.gather(gen_base.remote.aio(tag, 0, items_json, reward_n, target=target), gen_base.remote.aio(tag, 1, items_json, reward_n, target=target))
-                await gen_base.spawn.aio(tag, 2, items_json, reward_n, target=target)  # the test set's cache, for test scoring; not waited for
+                tensors = await make_base.remote.aio(tag, B["tag"], f"rl/{exp}/work/{info['rid']}", target, task)
+                parts = await asyncio.gather(gen_base.remote.aio(tag, 0, items_json, reward_n, target=target, task=task), gen_base.remote.aio(tag, 1, items_json, reward_n, target=target, task=task))
+                await gen_base.spawn.aio(tag, 2, items_json, reward_n, target=target, task=task)  # the test set's cache, for test scoring; not waited for
                 prev = B
                 B = await load_base(tag)
                 slog({"event": "rebase", "step": step, "base": tag, "previous": prev["tag"], "from_rollout": info["rid"], "its_reward": r_best,
@@ -929,13 +953,13 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
        reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = "", rollouts_per_gpu: int = 1,
        rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "", advantage: str = "grpo", adv_scale: float = 0.10,
-       target: str = DEFAULT_TARGET):
+       target: str = DEFAULT_TARGET, task: str = "math"):
     """advantage: "grpo" = (reward - group mean) / group spread; "mean" = (reward - group mean) / adv_scale (Dr. GRPO).
     target: a key of harness.target.TARGETS (run prep_target for it first)."""
     if target not in TARGETS:
         raise SystemExit(f"target must be one of {sorted(TARGETS)}")
     call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library, rollouts_per_gpu,
-                        rebase_every, update_check, start_base, force_rewards, advantage=advantage, adv_scale=adv_scale, target=target)
+                        rebase_every, update_check, start_base, force_rewards, advantage=advantage, adv_scale=adv_scale, target=target, task=task)
     print("SPAWNED", call.object_id)
 
 
@@ -1065,17 +1089,21 @@ async def eval_score(name: str, edits: str, dataset: str = "math500", base_tag: 
 @app.local_entrypoint()
 def evaluate(name: str, checkpoint: str = "", base: str = "original", n: int = 8, dataset: str = "math500", limit: int = 0,
              forward_budget: int = 32, rollout_minutes: int = 120, rollouts_per_gpu: int = 2, reward_items: int = 128, parallel: int = 4, edits: str = "",
-             target: str = DEFAULT_TARGET):
+             target: str = DEFAULT_TARGET, task: str = "math"):
     """Evaluate an editor checkpoint: n rollouts with no training update (same prompt and settings as RL rollouts; no notes,
     no web), then every submitted edit scored on `dataset` against starting model `base`. Outputs in /runs/eval/<name>/.
     checkpoint: a Tinker state or sampler path (tinker://...), "" for the untrained editor (a fresh LoRA).
     base: "original" (the target as downloaded) or a starting-model tag of that target (under /weights/bases/, or /weights/bases/<target>/).
     target: a key of harness.target.TARGETS (default qwen3.5-0.8b).
+    task: a key of harness.target.TASKS (default math): the practice folder, reward set and prompt wording of the rollouts
+    (run rl.loop::prep_task first); --dataset picks the set the edits are scored on (a task's own: TASKS[task]["eval_set"]).
     limit: score on the first `limit` problems only (tests). edits: skip the rollouts and score these run paths instead."""
     if dataset not in EVAL_SETS:
         raise SystemExit(f"dataset must be one of {sorted(EVAL_SETS)}")
     if target not in TARGETS:
         raise SystemExit(f"target must be one of {sorted(TARGETS)}")
+    if task not in TASKS:
+        raise SystemExit(f"task must be one of {sorted(TASKS)}")
     tag = "" if base == "original" else base
     print("evaluation set:", dataset, prep_eval_set.remote(dataset), "problems")
     if edits:
@@ -1083,7 +1111,7 @@ def evaluate(name: str, checkpoint: str = "", base: str = "original", n: int = 8
     else:
         call = rl_run.spawn(name, steps=1, group_size=n, forward_budget=forward_budget, rollout_minutes=rollout_minutes, hours=rollout_minutes / 60 + 0.5,
                             reward_items=reward_items, start_from=checkpoint, web=False, rollouts_per_gpu=rollouts_per_gpu, update_check=False,
-                            start_base=tag, mode="eval", eval_dataset=dataset, eval_limit=limit, eval_parallel=parallel, target=target)
+                            start_base=tag, mode="eval", eval_dataset=dataset, eval_limit=limit, eval_parallel=parallel, target=target, task=task)
     print("SPAWNED", call.object_id, "-> /runs/eval/" + name + "/summary.json")
 
 
@@ -1146,18 +1174,20 @@ def score_base(base: str, dataset: str = "math500", limit: int = 0, target: str 
 
 # ----------------------------------------------------------------------------- preparing another target
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, timeout=90 * 60, memory=32768, cpu=8)
-def baseline_sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int = 1, cap: int = GEN_CAP):
+def baseline_sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int = 1, cap: int = GEN_CAP, task: str = "math"):
     """The target as downloaded on the first `n_problems` MATH training problems of the practice "extra" split (the same
     problems for every target, never in the baseline or the select/confirm splits), with the forward tool's prompt, seeds
     and sampling. Reports accuracy, the share cut at `cap`, and how often "Wait" appears in cut-off and finished answers.
-    Writes /runs/data/targets/<target>/sweep_math<k>_n<n>_cap<cap>.json and the answers as .jsonl."""
+    Writes /runs/data/targets/<target>/sweep_math<k>_n<n>_cap<cap>.json and the answers as .jsonl.
+    task other than "math": the first `n_problems` of that task's "extra" split, written to the task's folder (sweep_<task><k>_...)."""
     import json, os, re, time
-    P = target_paths(target)
+    runs.reload()
+    P = target_paths(target, task)
     pdir = P["practice"]
     sp = json.load(open(f"{pdir}/splits.json"))
     practice = {json.loads(l)["id"]: json.loads(l) for l in open(f"{pdir}/problems.jsonl")}
-    ids = [i for i in sp["extra"] if practice[i]["source"] == "math_train"][:n_problems]
-    items = [{"qid": i, "source": "math_train", "answer": practice[i]["answer"], "prompt": practice[i]["problem"] + "\n\nPut your final answer in \\boxed{}."} for i in ids]
+    ids = [i for i in sp["extra"] if task != "math" or practice[i]["source"] == "math_train"][:n_problems]
+    items = [{"qid": i, "source": practice[i]["source"], "answer": practice[i]["answer"], "prompt": practice[i]["problem"] + "\n\nPut your final answer in \\boxed{}."} for i in ids]
     t = time.time()
     proc = start_vllm(target_dir(target), "original", 8001, 0.90, cap + 3000)
     rows = _Core._gen(None, "original", 8001, items, n, cap)
@@ -1165,12 +1195,12 @@ def baseline_sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int =
     waits = lambda rs: sum(len(re.findall(r"\bWait\b", r["text"])) for r in rs)
     toks = lambda rs: max(1, sum(r["tokens"] for r in rs))
     cut = [r for r in rows if r["finish"] == "length"]; done = [r for r in rows if r["finish"] != "length"]
-    out = {"target": target, "problems": len(ids), "samples_per_problem": n, "cap": cap, **summarize(rows, cap),
+    out = {"target": target, "task": task, "problems": len(ids), "samples_per_problem": n, "cap": cap, **summarize(rows, cap),
            "accuracy_of_finished_pct": round(100 * sum(bool(r["correct"]) for r in done) / len(done), 2) if done else None,
            "wait_per_1k_tokens": {"cut": round(1000 * waits(cut) / toks(cut), 2) if cut else None, "finished": round(1000 * waits(done) / toks(done), 2) if done else None},
            "wait_per_answer": {"cut": round(waits(cut) / len(cut), 1) if cut else None, "finished": round(waits(done) / len(done), 1) if done else None},
            "seconds": round(time.time() - t)}
-    f = f"{P['data']}/sweep_math{len(ids)}_n{n}_cap{cap}"
+    f = f"{P['data']}/sweep_{'math' if task == 'math' else task}{len(ids)}_n{n}_cap{cap}"
     os.makedirs(P["data"], exist_ok=True)
     json.dump(out, open(f + ".json", "w"), indent=1)
     with open(f + ".jsonl", "w") as fh:
@@ -1182,15 +1212,20 @@ def baseline_sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int =
 
 
 @app.local_entrypoint()
-def sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int = 1, cap: int = GEN_CAP):
+def sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int = 1, cap: int = GEN_CAP, task: str = "math"):
     """Quick baseline of a target as downloaded: accuracy and hit-cap rate on MATH training problems (1 GPU).
-    Another target is downloaded first (prep, CPU only), so this can run before prep_target."""
+    Another target is downloaded first (prep, CPU only), so this can run before prep_target.
+    task other than "math": its practice problems (built first by prep_task_data if missing, CPU only)."""
     if target not in TARGETS:
         raise SystemExit(f"target must be one of {sorted(TARGETS)}")
+    if task not in TASKS:
+        raise SystemExit(f"task must be one of {sorted(TASKS)}")
     if target != DEFAULT_TARGET:
         prep.remote(target)
-    call = baseline_sweep.spawn(target, n_problems, n, cap)
-    print("SPAWNED", call.object_id, f"-> /runs/data/targets/{target}/sweep_math{n_problems}_n{n}_cap{cap}.json")
+    if task != "math":
+        print("task data", prep_task_data.remote(task, target))
+    call = baseline_sweep.spawn(target, n_problems, n, cap, task)
+    print("SPAWNED", call.object_id, f"-> {target_paths(target, task)['data']}/sweep_{task}{n_problems}_n{n}_cap{cap}.json")
 
 
 @app.local_entrypoint()
@@ -1205,6 +1240,120 @@ def prep_target(target: str, limit: int = 0):
     print("arch", prep.remote(target))
     print("evaluation sets", {ds: prep_eval_set.remote(ds) for ds in ("math500", "gsm8k_test")})
     calls = {k: gen_base.spawn("", k, target=target, limit=limit) for k in (0, 1, 3)}
+    for k, c in calls.items():
+        print("part", k, c.object_id)
+    for k, c in calls.items():
+        print("part", k, "done", c.get())
+
+
+# ----------------------------------------------------------------------------- another task (practice, reward and held-out problems)
+def _numina_ok(r):
+    """A NuminaMath-CoT row the math grader can score: one \\boxed{} in the solution holding a short single answer,
+    not multi-part, not a proof, not a multiple-choice letter. Returns the answer or None."""
+    import re
+    p, sol = r["problem"], r["solution"]
+    if sol.count("\\boxed") != 1:
+        return None
+    a = last_boxed(sol)
+    if a is None:
+        return None
+    a = a.strip()
+    if not a or len(a) > 40 or not a.isascii() or re.search(r"[\u3000-\u9fff\uff01-\uff5e]", p):  # Chinese text or full-width punctuation left in
+        return None
+    if re.fullmatch(r"\(?[A-Ea-e]\)?", re.sub(r"\\text\{([^{}]*)\}|\\textbf\{([^{}]*)\}", r"\1\2", a).strip()):
+        return None  # multiple choice: the answer is a letter
+    if re.search(r"\\begin|\\\\|;|\\text\{[^{}]*[a-z]{4}|\b(and|or)\b", a):
+        return None  # several answers, or words
+    if re.search(r"(?<![\w)])\(\s*(1|I)\s*\).*(?<![\w)])\(\s*(2|II)\s*\)|\b(prove|Prove|show that|Show that)\b|[\u2160-\u2169\u2460-\u2469]", p, re.S):
+        return None  # multi-part or proof
+    if re.search(r"(^|\n|\s)A[:.\uff1a]\s*.*(\n|\s)B[:.\uff1a]", p, re.S):
+        return None  # options listed: multiple choice
+    return a
+
+
+@app.function(image=base_src, volumes={"/runs": runs, "/heldout": heldout_vol}, timeout=3600, cpu=4, memory=16384)
+def prep_task_data(task: str, target: str = DEFAULT_TARGET, n_total: int = 4500, n_heldout: int = 500, n_reward: int = 256, seed: int = 20261115):
+    """Once per task: a fixed-seed sample of the task's problems (streamed, shuffled with a seed, filtered by _numina_ok until
+    n_total rows), split into the held-out set (EVAL_SETS[eval_set], first n_heldout), the reward set (next n_reward; RL uses
+    the first 128) and the practice pool (the rest), all disjoint by normalized problem text. Per target: the practice folder
+    (problems.jsonl, index.tsv, splits.json with baseline/select/confirm_1/confirm_2 of 256 each and extra, README.txt).
+    Skips what exists. Returns the counts."""
+    import json, os, random, re
+    T = TASKS[_check_task(task)]
+    assert task != "math", "the math task is built by harness.target --step prep and the prep_* functions"
+    heldout_vol.reload(); runs.reload()
+    hd = os.path.dirname(T["reward_file"])
+    pool_f = f"{hd}/practice_pool.jsonl"
+    held_f = EVAL_SETS[T["eval_set"]]["file"]
+    if not all(os.path.exists(f) for f in (pool_f, held_f, T["reward_file"])):
+        from datasets import load_dataset
+        norm = lambda x: re.sub(r"\s+", " ", x.strip().lower())
+        ds = load_dataset(T["hf"], split="train", streaming=True).shuffle(seed=seed, buffer_size=20000)
+        rows, seen, scanned = [], set(), 0
+        for r in ds:
+            scanned += 1
+            if r.get("source") != T["source"]:
+                continue
+            a = _numina_ok(r)
+            k = norm(r["problem"])
+            if a is None or k in seen:
+                continue
+            seen.add(k)
+            rows.append({"problem": r["problem"], "answer": a, "solution": r["solution"]})
+            if len(rows) >= n_total:
+                break
+        print("scanned", scanned, "kept", len(rows))
+        assert len(rows) == n_total, len(rows)
+        os.makedirs(hd, exist_ok=True)
+        wr = lambda f, xs: open(f, "w").write("".join(json.dumps(x) + "\n" for x in xs))
+        wr(held_f, [{"qid": f"{task}_test/{i}", "problem": r["problem"], "answer": r["answer"], "source": task} for i, r in enumerate(rows[:n_heldout])])
+        wr(T["reward_file"], [{"qid": f"{task}_reward/{i}", "problem": r["problem"], "answer": r["answer"]} for i, r in enumerate(rows[n_heldout:n_heldout + n_reward])])
+        wr(pool_f, [{"id": f"{T['source']}/{i}", "source": T["source"], "level": "", "problem": r["problem"], "answer": r["answer"], "solution": r["solution"]}
+                    for i, r in enumerate(rows[n_heldout + n_reward:])])
+        json.dump({"task": task, "hf": T["hf"], "source": T["source"], "seed": seed, "buffer_size": 20000, "scanned": scanned, "n_total": n_total,
+                   "heldout": n_heldout, "reward": n_reward, "practice": n_total - n_heldout - n_reward}, open(f"{hd}/meta.json", "w"), indent=1)
+        heldout_vol.commit()
+    pool = [json.loads(l) for l in open(pool_f)]
+    d = target_paths(target, task)["practice"]
+    if not os.path.exists(f"{d}/splits.json"):
+        os.makedirs(d, exist_ok=True)
+        open(f"{d}/problems.jsonl", "w").write("".join(json.dumps(r) + "\n" for r in pool))
+        with open(f"{d}/index.tsv", "w") as f:
+            f.write("id\tsource\tlevel\tsubject\n")
+            for r in pool:
+                f.write(f"{r['id']}\t{r['source']}\t-\t{T['source']}\n")
+        ids = [r["id"] for r in pool]
+        random.Random(7).shuffle(ids)
+        splits = {k: ids[256 * j: 256 * (j + 1)] for j, k in enumerate(("baseline", "select", "confirm_1", "confirm_2"))}
+        splits["extra"] = ids[1024:]
+        json.dump(splits, open(f"{d}/splits.json", "w"))
+        open(f"{d}/README.txt", "w").write(
+            f"problems.jsonl: one JSON per line with id, source ({T['source']}), level (empty), problem, answer, solution (reference solution).\n"
+            f"{len(pool)} problems from the {T['source']} part of {T['hf']}, each with a single final answer. None of them appears in the held-out test.\n")
+        runs.commit()
+    sp = json.load(open(f"{d}/splits.json"))
+    return {"practice": len(pool), **{k: len(v) for k, v in sp.items()}, "reward": sum(1 for _ in open(T["reward_file"])),
+            "heldout": sum(1 for _ in open(held_f))}
+
+
+@app.local_entrypoint()
+def prep_task(task: str, target: str = DEFAULT_TARGET, gpus: int = 1, limit: int = 0, quick: bool = False, reward_items: int = 128, heldout: int = 0, gpu: str = "L40S"):
+    """Everything a (target, task) pair needs before rollouts or evaluate --task: the sampled problems (prep_task_data,
+    CPU), then the target's own answers: baseline (512 generations) and SUMMARY.txt, the reward set, select, confirm_1,
+    confirm_2 and the task's held-out set. --gpus 1: all on one L40S (gen_base part 4); --gpus 3: parts 0, 1, 2 on three.
+    --limit k: a test on the first k problems of each list, written under the task folder's _limit_test/.
+    --gpu: the GPU type of the generation jobs (default L40S). --quick: one GPU, no confirm splits. --reward-items k: the reward set's size (evaluate and rl then
+    need the same --reward-items). --heldout k: the original answers on only the first k held-out problems (evaluate --limit <= k)."""
+    if task not in TASKS or task == "math":
+        raise SystemExit(f"task must be one of {sorted(set(TASKS) - {'math'})}")
+    if target not in TARGETS:
+        raise SystemExit(f"target must be one of {sorted(TARGETS)}")
+    if target != DEFAULT_TARGET:
+        prep.remote(target)
+    print("task data", prep_task_data.remote(task, target))
+    parts = (5,) if quick else (4,) if gpus <= 1 else (0, 1, 2)
+    fn = gen_base.with_options(gpu=gpu)
+    calls = {k: fn.spawn("", k, reward_items=reward_items, target=target, limit=limit, task=task, test_limit=heldout) for k in parts}
     for k, c in calls.items():
         print("part", k, c.object_id)
     for k, c in calls.items():

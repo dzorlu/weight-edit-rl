@@ -132,6 +132,14 @@ uvx modal run --detach -m rl.loop::prep_target --target qwen3.5-2b
 uvx modal run --detach -m rl.loop::evaluate --target qwen3.5-2b --name 2b-untrained-math500 --checkpoint "" --base original --n 8 --dataset math500
 ```
 
+Another task. `--task` (a key of `TASKS` in `harness/target.py`; default `math`, the setup above) gives the rollouts another practice pool, reward set and held-out set, and the prompt's task statements. `numina_cn_k12`: a fixed-seed sample of 4,500 problems from the cn_k12 part of AI-MO/NuminaMath-CoT with one short final answer in the reference solution's `\boxed{}` (multi-part, proof and multiple-choice problems dropped): 500 held out (`EVAL_SETS["numina_cn_k12"]`), 256 for the reward set (RL uses 128), 3,744 for practice. Its files live under `/runs/data/targets/<target>/tasks/<task>/` and `/heldout/tasks/<task>/`.
+
+```bash
+uvx modal run --detach -m rl.loop::sweep --task numina_cn_k12            # samples the problems (CPU), then 200 of them at the 8,192 cap (1 GPU)
+uvx modal run --detach -m rl.loop::prep_task --task numina_cn_k12        # baseline + SUMMARY.txt, reward set, select/confirm, held-out answers (1 GPU)
+uvx modal run --detach -m rl.loop::evaluate --task numina_cn_k12 --dataset numina_cn_k12 --name <name> --checkpoint "" --base original --n 8
+```
+
 `evaluate --edits rl/<exp>/work/<rid>,...` scores existing edits without new rollouts. Tested end to end at small scale on 14 November 2026: one rollout from `nolib1-step2` with a 6-minute cap submitted an edit (reward-set gain +34.0) that was then scored on 5 GSM8K test problems.
 
 Measured cost of one full-length search: about 100 minutes on one L40S (about $3) plus under $1 of Tinker.

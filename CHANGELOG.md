@@ -4,6 +4,13 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 15 November 2026
 
+**A second task: `--task numina_cn_k12`** (10:55). `TASKS` in `harness/target.py` lists the tasks; `math` (the default) is the setup so far and is unchanged (the RL prompt is identical in all 8 combinations of notes, web and rebasing; checked). `numina_cn_k12`: a fixed-seed sample (streamed and shuffled with seed 20261115, buffer 20,000; 45,486 rows scanned) of 4,500 problems from the cn_k12 part of AI-MO/NuminaMath-CoT whose reference solution has exactly one `\boxed{}` holding a short ASCII answer; multi-part, proof, multiple-choice and untranslated problems are dropped. Split: 500 held-out (`EVAL_SETS["numina_cn_k12"]`, `/heldout/tasks/numina_cn_k12/heldout.jsonl`), 256 reward set (`/heldout/tasks/numina_cn_k12/reward.jsonl`), 3,744 practice (ids `cn_k12/<k>`; splits baseline, select, confirm_1, confirm_2 of 256 each, extra 2,720). Practice folder, cached answers and reward-set answers live under `/runs/data/targets/<target>/tasks/<task>/`, so nothing mixes with the MATH/GSM8K files.
+- Prompt: for this task the MATH-500 sentence, the MATH/GSM8K practice sentence and the example ids are replaced by the task's own (`TASKS[task]`); the baseline summary names the practice source.
+- `--task` on `rl`, `evaluate` and `sweep`; `Target`/`PackedTarget` take `task` (which practice folder is `/practice`); `gen_base` and `make_base` take `task`.
+- `rl.loop::prep_task --task <t>`: the sample (`prep_task_data`, CPU), then the original answers: baseline (512) and SUMMARY.txt, reward set, select, confirm splits, held-out set. `--quick` skips the confirm splits; `--reward-items k` and `--heldout k` shrink the reward set and the held-out cache; `--gpu` picks the GPU type.
+- Why: to test whether the editor's gains carry over to a math dataset it has never practised on, on the same model.
+- Tested: the sample built (counts above); the filter on hand-made cases; prompts for math unchanged. Prep launched with `--quick --reward-items 64 --heldout 250` (proof of concept: evaluations use `--reward-items 64 --limit 250`).
+
 **Training stopped; evaluations** (09:00). `drgrpo12` stopped during its first step (no update taken); `rebase1` finished after step 7 (mean −3.5). Evaluations launched, all on held-out sets the editor never sees:
 1. Editor: untrained vs trained (`rebase2-step5`), Qwen as downloaded, edits scored on MATH-500, 8 rollouts each (two groups of 4: `untrained-orig-math500`, `-b`; `rebase2s8-orig-math500`, `-b`).
 2. Editor on a disjoint set: existing edits scored on GSM8K test, untrained editor (`hero3` step 1) vs trained (`rebase2` step 4): `hero3-s1-gsm8k`, `rebase2-s4-gsm8k`.

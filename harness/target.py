@@ -305,9 +305,38 @@ def target_arch(target=DEFAULT_TARGET, mdir=""):
     return a
 
 
-def target_paths(target=DEFAULT_TARGET):
+# The task: which problems the editor practises on and is rewarded on, and which held-out set measures it. "math" (the default)
+# is the original setup (MATH + GSM8K practice, MATH reward set, MATH-500). Every other task has its own practice folder,
+# reward set and held-out set (EVAL_SETS[eval_set]), under a per-(target, task) folder, built once by rl.loop::prep_task.
+# Prompt texts (rl.loop.editor_prompt): `measured` replaces the MATH-500 sentence, `practice` the MATH/GSM8K practice sentence,
+# `ids` the example practice ids; None keeps the math wording.
+TASKS = {
+    "math": {"reward_file": "/heldout/rl/reward_math.jsonl", "eval_set": "math500", "measured": None, "practice": None, "ids": None},
+    "numina_cn_k12": {
+        "reward_file": "/heldout/tasks/numina_cn_k12/reward.jsonl", "eval_set": "numina_cn_k12", "hf": "AI-MO/NuminaMath-CoT", "source": "cn_k12",
+        "measured": ("HOW IT WILL BE MEASURED. 500 held-out problems from the same source as the practice problems (Chinese K-12 school mathematics, "
+                     "the cn_k12 part of NuminaMath-CoT, each with a single final answer), 2 samples per problem, separately for original and edited weights."),
+        "practice": ("2. Practice problems: <<N>> problems from the cn_k12 part of NuminaMath-CoT (Chinese K-12 school mathematics in English: "
+                     "algebra, functions, sequences, geometry, probability, calculus), each with a single final answer and a reference solution. "
+                     "They are disjoint from the held-out test."),
+        "ids": 'Practice ids look like "cn_k12/17" and "cn_k12/2954".'},
+}
+
+
+def _check_task(task):
+    if task not in TASKS:
+        raise ValueError(f"unknown task {task!r}; known: {sorted(TASKS)}")
+    return task
+
+
+def target_paths(target=DEFAULT_TARGET, task="math"):
     """Where a target's practice folder, cached answers and starting models live. The default target's files predate
-    the registry and stay where they were; every other target has its own folders, so answers are never mixed."""
+    the registry and stay where they were; every other target has its own folders, so answers are never mixed.
+    A task other than "math" has its own folder per target: /runs/data/targets/<target>/tasks/<task>/."""
+    if _check_task(task) != "math":
+        r = f"/runs/data/targets/{_check_target(target)}/tasks/{task}"
+        return {"practice": f"{r}/practice", "eval_cache": f"{r}/eval_cache", "math500_cache": f"{r}/eval_cache/math500_original.jsonl",
+                "reward_base": r + "/reward_base_{}.json", "bases_w": target_paths(target)["bases_w"], "bases_r": f"{r}/bases", "data": r}
     if _check_target(target) == DEFAULT_TARGET:
         return {"practice": "/runs/data/math_practice", "eval_cache": "/runs/data/eval_cache", "math500_cache": "/runs/heldout_original_cached.jsonl",
                 "reward_base": "/runs/rl/_reward_base_{}.json", "bases_w": "/weights/bases", "bases_r": "/runs/data/bases", "data": f"/runs/data/targets/{target}"}
@@ -319,9 +348,9 @@ def target_paths(target=DEFAULT_TARGET):
 BASES_W, BASES_R = "/weights/bases", "/runs/data/bases"  # the default target's starting models made by rebasing: weights, and their practice folder and caches
 
 
-def base_dirs(tag="", target=DEFAULT_TARGET):
+def base_dirs(tag="", target=DEFAULT_TARGET, task="math"):
     """(model dir, practice dir) of a starting model; tag "" is the target as downloaded."""
-    P = target_paths(target)
+    P = target_paths(target, task)
     if not tag:
         return target_dir(target), P["practice"]
     return f"{P['bases_w']}/{tag}", f"{P['bases_r']}/{tag}/practice"
@@ -358,12 +387,14 @@ EVAL_SETS = {
     "math500": {"file": "/heldout/math500.jsonl", "build": None, "grade": grade_math},
     "gsm8k_test": {"file": "/heldout/gsm8k_test.jsonl", "build": _build_gsm8k_test, "grade": grade_math},
     "aime2024": {"file": "/heldout/aime2024.jsonl", "build": _build_aime2024, "grade": grade_math},
+    # a task's held-out set (written by rl.loop::prep_task); its cached answers live in that task's folder
+    "numina_cn_k12": {"file": "/heldout/tasks/numina_cn_k12/heldout.jsonl", "build": None, "grade": grade_math, "task": "numina_cn_k12"},
 }
 
 
 def heldout_cache(tag="", dataset="math500", target=DEFAULT_TARGET):
     """The starting model's answers on an evaluation set, generated once (2 per problem, same seeds as heldout_eval)."""
-    P = target_paths(target)
+    P = target_paths(target, EVAL_SETS[dataset].get("task", "math"))
     if dataset == "math500":
         return f"{P['bases_r']}/{tag}/heldout_original.jsonl" if tag else P["math500_cache"]
     return f"{P['bases_r']}/{tag}/eval_{dataset}_original.jsonl" if tag else f"{P['eval_cache']}/{dataset}_original.jsonl"
@@ -377,7 +408,7 @@ def prep_eval_set(dataset: str):
     heldout_vol.reload()
     if not os.path.exists(spec["file"]):
         if spec["build"] is None:
-            raise RuntimeError(f"{spec['file']} is missing; run `uvx modal run -m harness.target --step prep`")
+            raise RuntimeError(f"{spec['file']} is missing; run `uvx modal run -m harness.target --step prep`" + (f" / `rl.loop::prep_task --task {spec['task']}`" if spec.get("task") else ""))
         rows = spec["build"]()
         with open(spec["file"], "w") as f:
             for r in rows:
@@ -583,7 +614,8 @@ class _Core:
         u = spec["pack_util"] if packed else spec["util"]
         self.edited_util, self.original_util = u["edited"], u["original"]
         self.tf_tokens = spec["pack_tf_tokens"] if packed else spec["tf_tokens"]
-        self.mdir, self.pdir = base_dirs(getattr(self, "base", ""), self.tgt)
+        self.task = _check_task(getattr(self, "task", "") or "math")
+        self.mdir, self.pdir = base_dirs(getattr(self, "base", ""), self.tgt, self.task)
         os.makedirs("/work", exist_ok=True)
         for link, dst in [("/model", self.mdir), ("/practice", self.pdir)]:
             if not os.path.exists(link):
@@ -985,6 +1017,7 @@ class Target(_Core):
     rid: str = modal.parameter(default="")  # one container per value, so each rollout gets its own target
     base: str = modal.parameter(default="")  # starting model (see base_dirs); "" is the downloaded model
     target: str = modal.parameter(default=DEFAULT_TARGET)  # a key of TARGETS
+    task: str = modal.parameter(default="math")  # a key of TASKS: which practice folder is /practice
 
     @modal.enter()
     def boot(self):
@@ -1044,6 +1077,7 @@ class PackedTarget(_Core):
     mps: int = modal.parameter(default=0)  # 1: run the GPU processes under CUDA MPS, so their kernels can overlap instead of taking turns
     base: str = modal.parameter(default="")  # starting model (see base_dirs); "" is the downloaded model
     target: str = modal.parameter(default=DEFAULT_TARGET)  # a key of TARGETS; GPU shares from its pack_util
+    task: str = modal.parameter(default="math")  # a key of TASKS: which practice folder is /practice
 
     @modal.enter()
     def boot(self):
