@@ -447,10 +447,11 @@ def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2
               timeout=int(11.5 * 3600), nonpreemptible=True, cpu=4, memory=16384)
 async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
                  reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = "",
-                 rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = ""):
+                 rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = ""):
     """start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
     rebase_every k: after every k steps, the best-rewarded submitted edit of those k steps is applied to the starting model.
-    update_check: after each update, score the trained batch under the new weights (KL, change per rollout)."""
+    update_check: after each update, score the trained batch under the new weights (KL, change per rollout).
+    force_rewards: tests only, comma-separated rewards that replace the measured ones so a short run trains."""
     import asyncio, re, json, os, time
     import tinker, torch
     from tinker_cookbook import model_info
@@ -772,6 +773,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         for _, _, lib_out in out:
             lib_merge(lib_out)
         good = [(tr, info) for tr, info, _ in out if info["ok"]]
+        if force_rewards:
+            for (_, info), r in zip(good, [float(x) for x in force_rewards.split(",")]):
+                info["reward"], info["forced_reward"] = r, True
         rewards = [info["reward"] for _, info in good]
         recent += [(step, info) for _, info in good]
         rec = {"event": "step", "step": step, "base": B["tag"], "rollouts": [info for _, info, _ in out], "rewards": rewards, "library": sorted(os.listdir(lib_dir)),
@@ -847,9 +851,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 @app.local_entrypoint()
 def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
        reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = "", rollouts_per_gpu: int = 1,
-       rebase_every: int = 0, update_check: bool = True, start_base: str = ""):
+       rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = ""):
     call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library, rollouts_per_gpu,
-                        rebase_every, update_check, start_base)
+                        rebase_every, update_check, start_base, force_rewards)
     print("SPAWNED", call.object_id)
 
 
