@@ -73,6 +73,40 @@ def step_row(r, s, n, note):
             f"<td>{mt}</td><td>{tl if tests else ''}</td><td>{e(s.get('entropy', '–'))}</td><td>{note}</td></tr>")
 
 
+def step_detail(r, s, n, note):
+    """One row per rollout of a finished step, then the mean over rollouts."""
+    ro = s.get("rollouts", [])
+    if not ro:
+        return []
+    def test_of(rid):
+        t = r["test"].get(rid)
+        return t["paired"]["diff_pp"] if t and t.get("paired") else None
+    cols = ["Rollout", "Reward", "Test", "Edited accuracy", "Hit cap", "Tensors edited", "Turns", "Minutes", "Forward passes", "Python calls", "Web calls", "Ended"]
+    p = [f"<h3>Step {n}{f', {note}' if note else ''}</h3><div class='tw'><table><tr>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>"]
+    vals = []
+    for x in ro:
+        t = test_of(x["rid"])
+        v = dict(reward=x.get("reward"), test=t, acc=x.get("edited_accuracy"), cap=x.get("edited_hit_cap"),
+                 tens=len(x.get("edited_tensors") or []), turns=x.get("turns"), minutes=x.get("minutes"),
+                 fwd=x.get("forward_used"), py=x.get("python_used"), web=x.get("web_used"))
+        vals.append(v)
+        tt = f"{t:+.1f}" if t is not None else ("no edit" if x["rid"] in r["test"] else "pending")
+        pct = lambda a: "–" if a is None else f"{a * 100:.1f}%"
+        p.append(f"<tr><td><a href='../../traces/#rl-{e(x['rid'])}'>{int(x['rid'].rsplit('-r', 1)[1]) + 1}</a></td><td>{sgn(v['reward'])}</td><td>{tt}</td>"
+                 f"<td>{pct(v['acc'])}</td><td>{pct(v['cap'])}</td><td>{v['tens']}</td><td>{v['turns']}</td><td>{v['minutes']}</td>"
+                 f"<td>{v['fwd']}</td><td>{v['py']}</td><td>{v['web']}</td><td>{e(x.get('ended', ''))}</td></tr>")
+    def mean(k):
+        xs = [v[k] for v in vals if v[k] is not None]
+        return sum(xs) / len(xs) if xs else None
+    f1 = lambda k: "–" if mean(k) is None else f"{mean(k):.1f}"
+    tm = mean("test")
+    p.append(f"<tr class='avg'><td>Mean</td><td>{sgn(mean('reward'))}</td><td>{'pending' if tm is None else f'{tm:+.1f}'}</td>"
+             f"<td>{'–' if mean('acc') is None else f'{mean(chr(97)+chr(99)+chr(99)) * 100:.1f}%'}</td><td>{'–' if mean('cap') is None else f'{mean(chr(99)+chr(97)+chr(112)) * 100:.1f}%'}</td>"
+             f"<td>{f1('tens')}</td><td>{f1('turns')}</td><td>{f1('minutes')}</td><td>{f1('fwd')}</td><td>{f1('py')}</td><td>{f1('web')}</td><td></td></tr>")
+    p.append("</table></div>")
+    return p
+
+
 def run_page(r):
     rel = (f"Branched from <a href='../{e(r['parent'])}/'>{e(r['parent'])}</a> after step {r['offset']}: it starts from that step's checkpoint, "
            f"so step{'s' if r['offset'] > 1 else ''} 1{'' if r['offset'] == 1 else f' to {r[chr(39) + 'offset' + chr(39)]}'} below {'are' if r['offset'] > 1 else 'is'} shared with {e(r['parent'])}."
@@ -107,6 +141,16 @@ def run_page(r):
             p.append("</table></div><p class='meta'>A paired test runs the original and the edited weights on the same train problems. Tests on fewer than 64 answers are not shown.</p>")
     else:
         p.append("</table></div>")
+    p.append("<h2>Rollouts per step</h2><p class='meta'>Reward and test in points. Edited accuracy and hit cap: share of the 256 reward-set answers that are correct, and that reach the 8,192-token limit (original weights: 7.4% and 93%). Test: the edit on MATH-500 minus the original 6.6%.</p>")
+    det = []
+    if r["parent"]:
+        par = byname.get(r["parent"])
+        for s in (par["done"][:r["offset"]] if par else []):
+            det.append(step_detail(par, s, s["step"] + 1 + par["offset"], f"shared with {e(par['name'])}"))
+    for s in r["done"]:
+        det.append(step_detail(r, s, s["step"] + 1 + r["offset"], ""))
+    for d in reversed(det):
+        p.extend(d)
     return p, "../../../"
 
 
@@ -128,7 +172,7 @@ main { max-width:900px; margin:0 auto; padding:32px 20px 80px; }
 h1 { font-size:1.8rem; margin:0 0 .3rem; } h2 { font-size:1.25rem; margin:2rem 0 .6rem; }
 .meta { color:var(--muted); font-size:.85rem; }
 .tw { overflow-x:auto; } table { border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums; }
-th, td { border:1px solid var(--line); padding:5px 9px; text-align:left; } th { background:var(--th); }"""
+th, td { border:1px solid var(--line); padding:5px 9px; text-align:left; } th { background:var(--th); }\ntr.avg td { font-weight:600; background:var(--th); } h3 { font-size:1.05rem; margin:1.4rem 0 .4rem; }"""
 theme = """<script>(function () { try { let v = localStorage.getItem('quarto-color-scheme');
 if (v == null && window.matchMedia('(prefers-color-scheme: dark)').matches) v = 'alternate';
 if (v === 'alternate') document.documentElement.classList.add('dark'); } catch (e) {} })();</script>"""
