@@ -1,0 +1,90 @@
+{
+ "nolib1-s0-r0": {
+  "original": 6.6,
+  "edited": 25.6,
+  "paired": {
+   "diff_pp": 19.0,
+   "se_pp": 1.49,
+   "questions": 500,
+   "wrong_to_right": 197,
+   "right_to_wrong": 7
+  }
+ },
+ "nolib1-s0-r1": {
+  "original": 6.6,
+  "edited": 18.9,
+  "paired": {
+   "diff_pp": 12.3,
+   "se_pp": 1.22,
+   "questions": 500,
+   "wrong_to_right": 134,
+   "right_to_wrong": 11
+  }
+ },
+ "nolib1-s0-r2": {
+  "original": 6.6,
+  "edited": 25.3,
+  "paired": {
+   "diff_pp": 18.7,
+   "se_pp": 1.46,
+   "questions": 500,
+   "wrong_to_right": 193,
+   "right_to_wrong": 6
+  }
+ },
+ "nolib1-s0-r3": {
+  "original": 6.6,
+  "edited": 28.2,
+  "paired": {
+   "diff_pp": 21.6,
+   "se_pp": 1.6,
+   "questions": 500,
+   "wrong_to_right": 232,
+   "right_to_wrong": 16
+  }
+ },
+ "nolib1-s0-r4": {
+  "original": 6.6,
+  "edited": 7.0,
+  "paired": {
+   "diff_pp": 0.4,
+   "se_pp": 0.65,
+   "questions": 500,
+   "wrong_to_right": 28,
+   "right_to_wrong": 24
+  }
+ },
+ "nolib1-s0-r5": {
+  "original": 6.6,
+  "edited": 16.6,
+  "paired": {
+   "diff_pp": 10.0,
+   "se_pp": 1.17,
+   "questions": 500,
+   "wrong_to_right": 111,
+   "right_to_wrong": 11
+  }
+ },
+ "nolib1-s0-r6": {
+  "original": 6.6,
+  "edited": 28.0,
+  "paired": {
+   "diff_pp": 21.4,
+   "se_pp": 1.56,
+   "questions": 500,
+   "wrong_to_right": 225,
+   "right_to_wrong": 11
+  }
+ },
+ "nolib1-s0-r7": {
+  "original": 6.6,
+  "edited": 11.0,
+  "paired": {
+   "diff_pp": 4.4,
+   "se_pp": 0.99,
+   "questions": 500,
+   "wrong_to_right": 71,
+   "right_to_wrong": 27
+  }
+ }
+}

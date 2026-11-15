@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**`nolib1` stopped after step 3** (22:00). Step 3 mean reward +18.7 (32.8, 27.7, 0, 16.8, 14.4, 18.4, 25.0, 14.4); step 2 +13.5. Step 2's edits on the test set: +19.0, +12.3, +18.7, +21.6, +0.4, +10.0, +21.4, +4.4, mean +13.5, matching its reward. An update check showed the first update changed the editor by about 0.0006 nats per token (learning rate 2e-5, below the ~10× full-fine-tuning rate recommended for LoRA), so these steps were sampled from a nearly untrained editor. The next runs use a higher learning rate; the step-3 checkpoint is kept (`nolib1-step3`).
+
 **`nolib1` step 2 finished** (19:50). Mean reward +13.5 (21.1, 11.3, 16.8, 21.1, 0.4, 13.3, 21.1, 3.1), the same as step 1 (+13.6); `hero3`'s step 2, with notes, was +24.3. The one training update alone did not raise the reward. Its edits are being scored on the test set; step 3 has started.
 
 **`hero3` step 2 scored on the test set** (19:30). MATH-500 gains of its 8 edits: +31.4, +22.0, +13.4, +24.2, +22.4, +28.3, +24.2, +28.1; mean +24.3, the same as the step's mean reward (+24.3). Step 1's mean test was +15.5.
