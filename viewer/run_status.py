@@ -12,6 +12,7 @@ sgn = lambda v: "" if v is None else f"{v * 100:+.1f}"
 NOTES = {"hero3": "with the shared notes library and web tools",
          "nolib1": "no notes library, no web tools",
          "rebase2": "No notes, no web tools, learning rate 2e-4; the starting model is updated to the best edit so far every 2 steps.",
+         "rebase2b": "Continues rebase2 from its last checkpoint and starting model (rebase2-k2). No notes, no web tools, learning rate 2e-4; the starting model is updated every 2 steps.",
          "rebase1": "No notes, no web tools, learning rate 2e-4; the starting model is updated to the best edit so far every step."}
 
 
