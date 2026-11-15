@@ -6,14 +6,13 @@
     <div class="wu-block"><div class="wu-cap"><code>W</code> [4 × 3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-W"></div></div>
     <div class="wu-op">*</div>
     <div class="wu-block">
-      <div class="wu-cap"><code>u</code> [3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-u"></div>
-      <div class="wu-cap wu-ucap"><code>U</code> [3 × 3], "Wait" column = <code>u</code></div>
+      <div class="wu-cap"><code>U</code> [3 × 3]: <code>u</code> = "Wait" column</div>
       <div class="wu-tok" id="wu-Uh"></div><div class="wu-ugrid" id="wu-U"></div>
     </div>
     <div class="wu-op">=</div>
     <div class="wu-block"><div class="wu-cap">contribution to "Wait" [4 × 3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-C"></div></div>
     <div class="wu-op wu-sumop">sum<br>row</div>
-    <div class="wu-block"><div class="wu-cap">per unit [4]</div><div class="wu-sp"></div><div class="wu-col" id="wu-S"></div></div>
+    <div class="wu-block"><div class="wu-cap">row contribution [4]</div><div class="wu-sp"></div><div class="wu-col" id="wu-S"></div></div>
   </div>
   <div class="wu-total" id="wu-total"></div>
   <div class="wu-read" id="wu-read" aria-live="polite">Hover a cell of <code>W</code> for one weight, or a unit on the right for its row.</div>
@@ -29,12 +28,12 @@
 .wu-sp{height:2px}
 .wu-grid{display:grid;grid-template-columns:repeat(3,50px);gap:3px}
 .wu-col{display:grid;grid-template-columns:50px;gap:3px}
-.wu-tok{display:grid;grid-template-columns:repeat(3,40px);gap:2px;font-size:10px;color:var(--muted);text-align:center;white-space:nowrap}
+.wu-tok{display:grid;grid-template-columns:repeat(3,50px);gap:3px;font-size:10.5px;color:var(--muted);text-align:center;white-space:nowrap}
 .wu-tok div{overflow:hidden}
-.wu-ugrid{display:grid;grid-template-columns:repeat(3,40px);gap:2px}
+.wu-ugrid{display:grid;grid-template-columns:repeat(3,50px);gap:3px}
 .wu .c{height:34px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;border-radius:4px;color:var(--ink);outline:none;transition:opacity .12s}
 .wu .c.h{cursor:pointer}
-.wu-ugrid .c{height:24px;font-size:11px}
+.wu-ugrid .c{height:34px}
 #wu-S .c{border:1px solid var(--line);font-weight:600}
 #wu-u .c{border:1px solid var(--line);font-weight:600}
 .wu .c.wait{box-shadow:inset 0 0 0 2px var(--accent)}
@@ -63,9 +62,9 @@
   };
   const cx = x.map(v => cell($('wu-x'), v, 0, true));
   const cW = W.map(r => r.map(v => cell($('wu-W'), v, 2, true)));
-  const cu = u.map(v => cell($('wu-u'), v, 0, false));
   $('wu-Uh').innerHTML = ['Wait', '&lt;/think&gt;', 'So'].map(n => `<div>${n}</div>`).join('');
   const cU = U.map(r => r.map(v => cell($('wu-U'), v, 1, false)));
+  $('wu-U').style.marginTop = '0';
   cU.forEach(r => r[0].classList.add('wait'));
   const cC = C.map(r => r.map(v => cell($('wu-C'), v, 3, true)));
   const cS = S.map(v => cell($('wu-S'), v, 3, true));
@@ -75,11 +74,11 @@
   const light = list => { all.forEach(c => c.classList.add('dim')); list.forEach(c => { c.classList.remove('dim'); c.classList.add('hi'); }); };
   const reset = () => { all.forEach(c => c.classList.remove('dim', 'hi')); $('wu-read').innerHTML = idle; };
   const showCell = (j, d) => {
-    reset(); light([cx[j], cW[j][d], cu[d], cU[d][0], cC[j][d]]);
+    reset(); light([cx[j], cW[j][d], cU[d][0], cC[j][d]]);
     $('wu-read').innerHTML = `W[${j}][${d}]: x[${j}] × W[${j}][${d}] × u[${d}] = ${fmt(x[j])} × ${fmt(W[j][d])} × ${fmt(u[d])} = <b>${fmt(C[j][d])}</b>`;
   };
   const showRow = j => {
-    reset(); light([cx[j], ...cW[j], ...cu, ...cU.map(r => r[0]), ...cC[j], cS[j]]);
+    reset(); light([cx[j], ...cW[j], ...cU.map(r => r[0]), ...cC[j], cS[j]]);
     $('wu-read').innerHTML = `Unit ${j}, row ${j} of W: ${C[j].map(fmt).join(' + ')} = <b>${fmt(S[j])}</b>`;
   };
   const on = (c, f) => ['mouseenter', 'focus', 'click'].forEach(e => c.addEventListener(e, f));
