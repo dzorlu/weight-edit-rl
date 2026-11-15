@@ -2,13 +2,13 @@
 # Scores every finished RL step's submitted edits, once each, on the 2 GPUs the RL runs leave free.
 #   1. MATH-500 (rl.loop::test), then 2. AIME 2024 (rl.loop::evaluate --edits, scoring only).
 # Priority: regenerating a new starting model's cached answers blocks the next step, so a step is scored only once the
-# following step's rollouts have started (or the run has ended), and at most 2 scoring jobs run at once.
+# following step's rollouts have started (or the run has ended), and at most 1 scoring job runs at once (each takes 2 GPUs: the starting model's answers and the edits).
 # BACKFILL lists earlier steps to score on AIME 2024 when nothing else is waiting, as "<exp>:<k>" (k counts from 0).
 # Usage: BACKFILL="hero3:0 hero3:1 nolib1:0 nolib1:1" scripts/auto_test.sh "<exp> [<exp> ...]" [max-hours]
 EXPS=$1; MAXH=${2:-12}; REPO=$(cd "$(dirname "$0")/.." && pwd); START=$(date +%s); cd "$REPO"; M=results/rl/.scored; mkdir -p $M
 jobs() { ls $M/*.running 2>/dev/null | while read f; do a=$(cat $f); uvx -q modal app list 2>/dev/null | grep "${a:0:14}" | grep -q ephemera && echo $f || rm -f $f; done | wc -l; }
 launch() {  # name, command...
-  local name=$1; shift; [ -f $M/$name.done ] && return 0; [ "$(jobs)" -ge 2 ] && return 1
+  local name=$1; shift; [ -f $M/$name.done ] && return 0; [ "$(jobs)" -ge 1 ] && return 1
   out=$("$@" 2>&1); app=$(echo "$out" | grep -o 'ap-[A-Za-z0-9]*' | head -1)
   [ -n "$app" ] && { echo $app > $M/$name.running; touch $M/$name.done; echo "$(date +%H:%M) started $name ($app)"; } || echo "$(date +%H:%M) failed to start $name: $(echo "$out" | tail -1)"
 }
