@@ -114,7 +114,7 @@ def run_page(r):
     p = [f"<h1>RL run: {e(r['name'])}</h1>",
          f"<div class='meta'>Updated {STAMP} · <a href='../'>all runs</a> · <a href='../../'>map of the edits</a> · <a href='../../traces/'>trajectories</a> · "
          f"<a href='../../changelog/'>changelog</a> · <a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(r['name'])}'>logs</a></div>",
-         f"<p>{NOTES.get(r['name'], '').capitalize()}. {rel} State: {state_of(r)}.</p>", INTRO, "<h2>Steps</h2><p class='meta'>Every step listed here has finished: all rollouts scored and the training update applied. "Being scored" means the step's edits are still running on MATH-500.</p>", HEAD]
+         f"<p>{NOTES.get(r['name'], '').capitalize()}. {rel} State: {state_of(r)}.</p>", INTRO, "<h2>Steps</h2><p class='meta'>Every step listed here has finished: all rollouts scored and the training update applied. &quot;Being scored&quot; means the step's edits are still running on MATH-500.</p>", HEAD]
     if r["parent"]:
         par = byname.get(r["parent"])
         for s in (par["done"][:r["offset"]] if par else []):
