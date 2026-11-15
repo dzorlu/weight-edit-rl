@@ -13,7 +13,7 @@ Cost bounds: each rollout holds one L40S for at most `rollout_minutes`; the whol
 Outputs: /runs/rl/<exp>/ on the runs volume (steps.jsonl, one transcript per rollout).
 """
 import modal
-from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PY_BUDGET, GEN_CAP, last_boxed
+from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval
 from harness.prompts import PROMPT, GUIDE
 
 MODEL = "thinkingmachines/Inkling-2-Small:peft:262144"  # 256K-context variant; a rollout is one long sequence
@@ -604,3 +604,40 @@ def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, 
        reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = ""):
     call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library)
     print("SPAWNED", call.object_id)
+
+
+@app.function(image=rl_image, volumes={"/runs": runs}, timeout=int(12 * 3600))
+async def test_step_edits(exp: str, steps: str = "0", parallel: int = 2):
+    """Score each rollout's submitted edit on the test set (MATH-500), which the RL loop never uses.
+    Only the edited side is generated; the original side comes from one cached set of answers."""
+    import asyncio, json, os, shutil
+    runs.reload()
+    cached = "/runs/heldout_original_cached.jsonl"
+    if not os.path.exists(cached):
+        shutil.copy("/runs/inkling2s-qwen08-math-methods-1/heldout/original.jsonl", cached)
+        await runs.commit.aio()
+    sem = asyncio.Semaphore(parallel)
+
+    async def one(rid):
+        path = f"rl/{exp}/work/{rid}"
+        if os.path.exists(f"/runs/{path}/heldout.json"):
+            return rid, json.load(open(f"/runs/{path}/heldout.json"))
+        async with sem:
+            return rid, await heldout_eval.remote.aio(path, 2, 0, True)
+
+    rids = sorted(d for d in os.listdir(f"/runs/rl/{exp}/work") if any(d.startswith(f"{exp}-s{s}-") for s in steps.split(",")))
+    res = await asyncio.gather(*[one(r) for r in rids])
+    out = {rid: {"original": h["original"]["accuracy_pct"], "edited": (h.get("edited") or {}).get("accuracy_pct"),
+                 "paired": h.get("paired_edited_minus_original")} for rid, h in res}
+    runs.reload()
+    p = f"/runs/rl/{exp}/test.json"
+    allres = json.load(open(p)) if os.path.exists(p) else {}
+    allres.update(out)
+    json.dump(allres, open(p, "w"), indent=1)
+    await runs.commit.aio()
+    print(json.dumps(out, indent=1))
+
+
+@app.local_entrypoint()
+def test(exp: str, steps: str = "0", parallel: int = 2):
+    print("SPAWNED", test_step_edits.spawn(exp, steps, parallel).object_id)

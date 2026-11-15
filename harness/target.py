@@ -729,7 +729,7 @@ class Target:
 
 # ----------------------------------------------------------------------------- held-out evaluation
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=90 * 60, memory=32768)
-def heldout_eval(run_id: str, n: int = 2, limit: int = 0):
+def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: bool = False):
     import json, os, shutil, concurrent.futures as cf, zlib, time
     from safetensors.torch import load_file, save_file
     runs.reload()
@@ -772,7 +772,12 @@ def heldout_eval(run_id: str, n: int = 2, limit: int = 0):
         return rows
 
     out = {"run_id": run_id, "n_per_problem": n, "problems": len(items), "cap": GEN_CAP, "edited_tensors": sorted(edits)}
-    rows_o = run(mdir, "original")
+    cached = "/runs/heldout_original_cached.jsonl"  # one fixed set of the original weights' test answers, so every edit is compared with the same baseline
+    if use_cached_original and os.path.exists(cached) and not limit:
+        rows_o = [json.loads(l) for l in open(cached)]
+        out["original_from_cache"] = True
+    else:
+        rows_o = run(mdir, "original")
     out["original"] = summarize(rows_o, GEN_CAP)
     os.makedirs(f"/runs/{run_id}/heldout", exist_ok=True)
     with open(f"/runs/{run_id}/heldout/original.jsonl", "w") as f:

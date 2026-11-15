@@ -4,6 +4,10 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**Each step's edits are scored on the test set** (`rl.loop::test`). The reward set trains the editor, so it cannot also measure it. Each rollout's submitted edit is now scored on MATH-500, which the RL loop never uses, against one cached set of the original weights' answers. 2 GPUs, alongside the rollouts' 8.
+
+**The sampler-trainer KL is exactly 0, and that is real.** Given fake sampler log-probabilities, Tinker's trainer returned its own computed values, which match the sampler bit for bit at the same weights. With one update per batch there is no mismatch to correct.
+
 **Trainer-versus-sampler metrics, and the hero run restarted as `hero3`** (14:00).
 Each RL step now records, on the action tokens it trains on: the KL between the sampler's and the trainer's log-probabilities (first- and second-order estimates, as in the Tinker cookbook), the largest per-token difference, the share of tokens differing by more than 0.2, and the entropy of the sampled tokens. The original weights' answers on the reward set are cached, so a run no longer spends 12 minutes regenerating them.
 Why: without these, a mismatch between Tinker's sampler and trainer, or a collapse in entropy, would go unnoticed.
