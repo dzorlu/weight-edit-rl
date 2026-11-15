@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**A second arm without the library: `nolib1`** (17:45). Starts from `hero3`'s step-1 checkpoint, same prompt and settings, but no web tools and no `/library`. In `hero3`, step 2's rollouts read step 1's notes, including the best rollout's full recipe, so step 2's gain mixes the training update with copying. `nolib1`'s first step measures the update alone; `hero3` continues as the arm with the library.
+
 **Each step's edits are scored on the test set** (`rl.loop::test`). The reward set trains the editor, so it cannot also measure it. Each rollout's submitted edit is now scored on MATH-500, which the RL loop never uses, against one cached set of the original weights' answers. 2 GPUs, alongside the rollouts' 8.
 
 **The sampler-trainer KL is exactly 0, and that is real.** Given fake sampler log-probabilities, Tinker's trainer returned its own computed values, which match the sampler bit for bit at the same weights. With one update per batch there is no mismatch to correct.
