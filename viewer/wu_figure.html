@@ -6,13 +6,13 @@
     <div class="wu-block"><div class="wu-cap"><code>W</code> [4 × 3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-W"></div></div>
     <div class="wu-op">*</div>
     <div class="wu-block">
-      <div class="wu-cap"><code>U</code> [3 × 3]: <code>u</code> = "Wait" column</div>
+      <div class="wu-cap"><code>U</code> [3 × 3]</div>
       <div class="wu-tok" id="wu-Uh"></div><div class="wu-ugrid" id="wu-U"></div>
     </div>
     <div class="wu-op">=</div>
     <div class="wu-block"><div class="wu-cap">contribution to "Wait" [4 × 3]</div><div class="wu-sp"></div><div class="wu-grid" id="wu-C"></div></div>
     <div class="wu-op wu-sumop">sum<br>row</div>
-    <div class="wu-block"><div class="wu-cap">row contribution [4]</div><div class="wu-sp"></div><div class="wu-col" id="wu-S"></div></div>
+    <div class="wu-block"><div class="wu-cap">row contribution [4]</div><div class="wu-sp"></div><div class="wu-col" id="wu-S"></div><div class="wu-tot" id="wu-T"></div></div>
   </div>
   <div class="wu-total" id="wu-total"></div>
   <div class="wu-read" id="wu-read" aria-live="polite">Hover a cell of <code>W</code> for one weight, or a unit on the right for its row.</div>
@@ -43,6 +43,10 @@
 .wu-op{align-self:flex-start;margin-top:74px;min-width:14px;text-align:center;font:600 18px ui-monospace,Menlo,monospace;color:var(--ink)}
 .wu-sumop{font:12px -apple-system,system-ui,sans-serif;color:var(--muted);margin-top:68px}
 .wu-total{margin-top:14px;font-size:14px}
+.wu-tot{margin-top:8px;font-size:12px;color:var(--muted);width:150px}
+.wu-trow{display:flex;justify-content:space-between;gap:8px;padding:2px 0}
+.wu-trow b{font:600 12.5px ui-monospace,Menlo,monospace;color:var(--ink)}
+.wu-final{border-top:1px solid var(--line);margin-top:2px;padding-top:4px;color:var(--ink)}
 .wu-read{margin-top:6px;font-size:15px;min-height:1.5em}
 </style>
 <script>
@@ -70,12 +74,13 @@
   const cS = S.map(v => cell($('wu-S'), v, 3, true));
   const top = S.indexOf(Math.max(...S));
   const idle = 'Hover a cell of <code>W</code> for one weight, or a unit on the right for its row.';
-  $('wu-total').innerHTML = `Layer total, every cell added: <b>${fmt(total)}</b>. Unit ${top} contributes the most, ${fmt(S[top])}: the row to delete or edit.`;
+  $('wu-T').innerHTML = `<div class="wu-trow"><span>sum</span><b>${fmt(total)}</b></div><div class="wu-trow"><span>+ residual h0·u</span><b>0.5</b></div><div class="wu-trow wu-final"><span>= Wait logit</span><b>${fmt(total + 0.5)}</b></div>`;
+  $('wu-total').innerHTML = `The rows add up to <b>${fmt(total)}</b>, this layer's part of the "Wait" logit. Adding the residual's 0.5 gives the logit, <b>${fmt(total + 0.5)}</b>, as in figure 1. Unit ${top} contributes the most, ${fmt(S[top])}: the row to delete or edit.`;
   const light = list => { all.forEach(c => c.classList.add('dim')); list.forEach(c => { c.classList.remove('dim'); c.classList.add('hi'); }); };
   const reset = () => { all.forEach(c => c.classList.remove('dim', 'hi')); $('wu-read').innerHTML = idle; };
   const showCell = (j, d) => {
     reset(); light([cx[j], cW[j][d], cU[d][0], cC[j][d]]);
-    $('wu-read').innerHTML = `W[${j}][${d}]: x[${j}] × W[${j}][${d}] × u[${d}] = ${fmt(x[j])} × ${fmt(W[j][d])} × ${fmt(u[d])} = <b>${fmt(C[j][d])}</b>`;
+    $('wu-read').innerHTML = `W[${j}][${d}]: x[${j}] × W[${j}][${d}] × U[${d}][Wait] = ${fmt(x[j])} × ${fmt(W[j][d])} × ${fmt(u[d])} = <b>${fmt(C[j][d])}</b>`;
   };
   const showRow = j => {
     reset(); light([cx[j], ...cW[j], ...cU.map(r => r[0]), ...cC[j], cS[j]]);
