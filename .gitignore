@@ -6,3 +6,4 @@ viewer/site/
 *.npy
 .env
 results/rl/.tested_*
+results/rl/.scored/

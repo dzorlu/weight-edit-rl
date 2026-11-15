@@ -240,12 +240,24 @@ def _build_gsm8k_test(n=500, seed=20261115):
     return rows[:n]
 
 
+def _build_aime2024(copies=4):
+    """AIME 2024 (30 problems), each listed 4 times under distinct qids so that 2 samples per row give 8 answers per problem
+    (240 answers); 60 answers would be too few to resolve a gain."""
+    from datasets import load_dataset
+    rows = []
+    for i, r in enumerate(load_dataset("HuggingFaceH4/aime_2024")["train"]):
+        for k in range(copies):
+            rows.append({"qid": f"aime2024/{i}#{k}", "problem": r["problem"], "answer": str(r["answer"]).strip(), "source": "aime2024"})
+    return rows
+
+
 # Sets an edit can be scored on (heldout_eval, rl.loop::evaluate). To add one: a file of {qid, problem, answer, source} rows,
 # a function that builds it (run once by prep_eval_set; None if `prep` writes it) and a grader (text, gold) -> (extracted, correct).
 # The starting model's answers on each set are cached per starting model (heldout_cache).
 EVAL_SETS = {
     "math500": {"file": "/heldout/math500.jsonl", "build": None, "grade": grade_math},
     "gsm8k_test": {"file": "/heldout/gsm8k_test.jsonl", "build": _build_gsm8k_test, "grade": grade_math},
+    "aime2024": {"file": "/heldout/aime2024.jsonl", "build": _build_aime2024, "grade": grade_math},
 }
 
 
