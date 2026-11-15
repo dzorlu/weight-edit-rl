@@ -1,0 +1,107 @@
+<!-- Interactive single-layer figure: W [M, D], u [D] → W * u → × x → contribution. Spliced into posts/weight-edits/index.html. -->
+<div class="wu" id="wu">
+  <div class="wu-row">
+    <div class="wu-block">
+      <div class="wu-cap"><code>W</code> [4 × 3]</div>
+      <div class="wu-top" id="wu-u"></div>
+      <div class="wu-grid" id="wu-W"></div>
+    </div>
+    <div class="wu-op">× <code>u</code><br>→</div>
+    <div class="wu-block">
+      <div class="wu-cap"><code>W * u</code> [4 × 3]</div>
+      <div class="wu-top wu-blank"></div>
+      <div class="wu-grid" id="wu-Wu"></div>
+    </div>
+    <div class="wu-op">× <code>x</code><br>→</div>
+    <div class="wu-block">
+      <div class="wu-cap">contribution [4 × 3]</div>
+      <div class="wu-top wu-blank"></div>
+      <div class="wu-withx">
+        <div class="wu-x" id="wu-x"></div>
+        <div class="wu-grid" id="wu-C"></div>
+        <div class="wu-sum" id="wu-S"></div>
+      </div>
+    </div>
+  </div>
+  <div class="wu-total" id="wu-total"></div>
+  <div class="wu-read" id="wu-read" aria-live="polite">Hover or tap a cell, or a row's total.</div>
+</div>
+<noscript><p>The figure needs JavaScript. Its numbers: W rows [0.5, 0, 1], [−1, 0.5, 0], [2, 1, 0.5], [0, −1, 1]; u = [1, 0.5, 0]; x = [1, 2, 1.5, 0.5]; unit totals 0.5, −1.5, 3.75, −0.25; layer total 2.5.</p></noscript>
+<style>
+.wu{margin:16px 0 8px;padding:14px;border:1px solid var(--line);border-radius:8px;overflow-x:auto}
+.wu-row{display:flex;align-items:flex-start;gap:10px;flex-wrap:nowrap;min-width:600px}
+.wu-block{display:flex;flex-direction:column;gap:4px}
+.wu-cap{font-size:13px;color:var(--muted);height:20px}
+.wu-top{display:grid;grid-template-columns:repeat(3,42px);gap:3px;height:34px}
+.wu-top .c{font-size:11px;color:var(--muted);text-align:center;line-height:1.1}
+.wu-top .c b{display:block;color:var(--ink);font:600 12px ui-monospace,Menlo,monospace}
+.wu-grid{display:grid;grid-template-columns:repeat(3,42px);gap:3px}
+.wu-withx{display:flex;gap:6px;align-items:flex-start}
+.wu-x,.wu-sum{display:grid;grid-template-rows:repeat(4,34px);gap:3px}
+.wu-x .c,.wu-sum .c{height:34px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;padding:0 6px;border-radius:4px}
+.wu-x .c{color:var(--muted)}
+.wu-sum .c{border:1px solid var(--line);min-width:52px;cursor:pointer;font-weight:600}
+.wu-grid .c{height:34px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;border-radius:4px;cursor:pointer;color:var(--ink);outline:none}
+.wu .c.dim{opacity:.35}
+.wu .c.hi{box-shadow:0 0 0 2px var(--accent)}
+.wu .c:focus-visible{box-shadow:0 0 0 2px var(--accent)}
+.wu-op{align-self:center;text-align:center;color:var(--muted);font-size:13px;padding-top:40px;min-width:34px}
+.wu-total{margin-top:12px;font-size:14px}
+.wu-read{margin-top:6px;font-size:14px;color:var(--muted);min-height:1.5em}
+</style>
+<script>
+(function () {
+  const W = [[0.5, 0, 1], [-1, 0.5, 0], [2, 1, 0.5], [0, -1, 1]], u = [1, 0.5, 0], x = [1, 2, 1.5, 0.5];
+  const M = W.length, D = u.length;
+  const Wu = W.map(r => r.map((v, d) => v * u[d]));
+  const C = Wu.map((r, j) => r.map(v => v * x[j]));
+  const rows = C.map(r => r.reduce((a, b) => a + b, 0)), total = rows.reduce((a, b) => a + b, 0);
+  const fmt = v => (Math.abs(v) < 1e-12 ? 0 : Math.round(v * 100) / 100).toString().replace('-', '−');
+  const tint = (v, vmax) => {
+    if (Math.abs(v) < 1e-12) return 'var(--code)';
+    const p = Math.round(20 + 70 * Math.min(1, Math.abs(v) / vmax));
+    return `color-mix(in srgb, ${v > 0 ? 'var(--pos)' : 'var(--neg)'} ${p}%, transparent)`;
+  };
+  const $ = id => document.getElementById(id), cells = { W: [], Wu: [], C: [] }, sums = [];
+  $('wu-u').innerHTML = u.map((v, d) => `<div class="c">u[${d}]<b>${fmt(v)}</b></div>`).join('');
+  for (const [key, M_, vmax] of [['W', W, 2], ['Wu', Wu, 2], ['C', C, 3]]) {
+    const g = $('wu-' + key);
+    M_.forEach((r, j) => r.forEach((v, d) => {
+      const c = document.createElement('div');
+      c.className = 'c'; c.tabIndex = 0; c.textContent = fmt(v); c.style.background = tint(v, vmax);
+      c.dataset.j = j; c.dataset.d = d; c.setAttribute('aria-label', `${key} row ${j} column ${d}: ${fmt(v)}`);
+      g.appendChild(c); (cells[key][j] = cells[key][j] || [])[d] = c;
+    }));
+  }
+  $('wu-x').innerHTML = x.map((v, j) => `<div class="c">x[${j}] = ${fmt(v)}</div>`).join('');
+  rows.forEach((v, j) => {
+    const c = document.createElement('div');
+    c.className = 'c'; c.tabIndex = 0; c.textContent = fmt(v); c.style.background = tint(v, 3); c.dataset.j = j;
+    c.setAttribute('aria-label', `unit ${j} total: ${fmt(v)}`); $('wu-S').appendChild(c); sums[j] = c;
+  });
+  const top = rows.indexOf(Math.max(...rows));
+  $('wu-total').innerHTML = `Layer total, the sum of every cell: <b>${fmt(total)}</b>. Unit ${top} adds the most, ${fmt(rows[top])}: the candidate to delete or edit.`;
+  const all = () => [...Object.values(cells).flat(2), ...sums];
+  const clear = () => all().forEach(c => c.classList.remove('dim', 'hi'));
+  const showCell = (j, d) => {
+    all().forEach(c => c.classList.add('dim'));
+    for (const k of ['W', 'Wu', 'C']) { cells[k][j][d].classList.remove('dim'); cells[k][j][d].classList.add('hi'); }
+    $('wu-read').innerHTML = `Unit ${j}, column ${d}: x[${j}] × W[${j}, ${d}] × u[${d}] = ${fmt(x[j])} × ${fmt(W[j][d])} × ${fmt(u[d])} = <b>${fmt(C[j][d])}</b>`;
+  };
+  const showRow = j => {
+    all().forEach(c => c.classList.add('dim'));
+    for (const k of ['W', 'Wu', 'C']) cells[k][j].forEach(c => { c.classList.remove('dim'); c.classList.add('hi'); });
+    sums[j].classList.remove('dim'); sums[j].classList.add('hi');
+    $('wu-read').innerHTML = `Unit ${j}: ${C[j].map(fmt).join(' + ')} = <b>${fmt(rows[j])}</b>, what this unit adds to the "Wait" logit.`;
+  };
+  Object.values(cells).flat(2).forEach(c => {
+    const go = () => showCell(+c.dataset.j, +c.dataset.d);
+    c.addEventListener('mouseenter', go); c.addEventListener('focus', go); c.addEventListener('click', go);
+  });
+  sums.forEach(c => {
+    const go = () => showRow(+c.dataset.j);
+    c.addEventListener('mouseenter', go); c.addEventListener('focus', go); c.addEventListener('click', go);
+  });
+  $('wu').addEventListener('mouseleave', () => { clear(); $('wu-read').textContent = 'Hover or tap a cell, or a row\'s total.'; });
+})();
+</script>
