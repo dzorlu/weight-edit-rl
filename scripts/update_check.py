@@ -34,8 +34,10 @@ def loop_defs():
     src = open(os.path.join(REPO, "rl/loop.py")).read()
     ns = {}
     for node in ast.parse(src).body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) in ("TOOLS", "WEB_TOOL", "WEB_READ_TOOL", "RETURN_KEYS") for t in node.targets):
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) in ("TOOLS_TEMPLATE", "WEB_TOOL", "WEB_READ_TOOL", "RETURN_KEYS") for t in node.targets):
             exec(compile(ast.Module([node], []), "loop.py", "exec"), ns)
+    # the tools as the hero3 and nolib1 runs had them (target Qwen3.5-0.8B: 24 layers)
+    ns["TOOLS"] = json.loads(json.dumps(ns["TOOLS_TEMPLATE"]).replace("<<HS>>", "0..24").replace("<<MLP>>", "0..23"))
     return ns
 
 

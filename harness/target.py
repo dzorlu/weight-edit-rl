@@ -1,13 +1,16 @@
-"""The environment: Qwen3.5-0.8B on Modal with the two tools an editor uses, plus the scoring.
+"""The environment: the target model (Qwen3.5-0.8B by default; see TARGETS) on Modal with the two tools an editor uses, plus the scoring.
 
 - `Target` (one L40S per search or rollout): a Python sandbox over the weight files, the forward tool
   (generation and teacher-forced passes), a reward method, and a snapshot of the work folder.
 - `PackedTarget`: the same tools for two rollouts on one L40S (each method takes the rollout id first).
 - `heldout_eval`: MATH-500 (or another set in EVAL_SETS), original weights against the submitted edit, paired by problem.
-- `prep`: downloads the target and builds the practice and held-out sets.
+- `prep`: downloads the target and builds the practice and held-out sets (another target: downloads it and copies the practice files).
+- `TARGETS`, `target_arch`, `target_paths`: the models that can be the target, their architecture read from config.json and
+  the safetensors headers, and where each target's practice files and cached answers live.
 - `paper_edit`: writes the published Math edit of arXiv 2611.09382 as a control.
 
-    uvx modal run -m harness.target --step prep
+    uvx modal run -m harness.target --step prep [--target qwen3.5-2b]
+    uvx modal run -m harness.target --step arch --target qwen3.5-2b
     uvx modal run -m harness.target --step smoke
     uvx modal run --detach -m harness.target --step heldout --run-id <run>
 """
@@ -15,7 +18,22 @@ import re
 
 import modal
 
-TARGET = "Qwen/Qwen3.5-0.8B"
+# The models that can be the target. Only the Hugging Face id and the GPU shares are set here; layer count, sizes, attention
+# layout and tensor names are read from the downloaded config.json and safetensors headers (target_arch).
+# util: Target (one rollout per L40S): GPU share of the edited and original vLLM servers; tf_tokens: tokens per teacher-forced batch.
+# pack_util / pack_tf_tokens: the same for PackedTarget (two rollouts per L40S: two edited servers, one shared original server,
+# the teacher-forced model capped at forward_model). The 0.8B values were measured (results/packing_test.md).
+# 2B (4.5 GB of bf16 weights against 1.7 GB; the same KV cache per token, since both have 6 full-attention layers with
+# 2 KV heads of width 256): vLLM servers keep about 5 GB for the KV cache at 0.25, about 2 GB at 0.16; the teacher-forced
+# model gets 0.22 (10 GB: 4.5 GB of weights, activations of 4,096-token batches at twice the hidden size). Not yet measured.
+TARGETS = {
+    "qwen3.5-0.8b": {"hf": "Qwen/Qwen3.5-0.8B", "util": {"edited": 0.40, "original": 0.40}, "tf_tokens": 40000,
+                     "pack_util": {"edited": 0.30, "original": 0.15, "forward_model": 0.13}, "pack_tf_tokens": 8192},
+    "qwen3.5-2b": {"hf": "Qwen/Qwen3.5-2B", "util": {"edited": 0.33, "original": 0.33}, "tf_tokens": 16000,
+                   "pack_util": {"edited": 0.25, "original": 0.16, "forward_model": 0.22}, "pack_tf_tokens": 4096},
+}
+DEFAULT_TARGET = "qwen3.5-0.8b"
+TARGET = TARGETS[DEFAULT_TARGET]["hf"]
 GEN_CAP = 8192
 FORWARD_BUDGET = 50
 PY_BUDGET = 300
@@ -212,19 +230,98 @@ def chat(port, name, messages, max_tokens, seed=None, timeout=3000, **kw):
     return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
 
 
-def target_dir():
-    from huggingface_hub import snapshot_download
-    return snapshot_download(TARGET, local_files_only=True)
+def _check_target(target):
+    if target not in TARGETS:
+        raise ValueError(f"unknown target {target!r}; known: {sorted(TARGETS)}")
+    return target
 
 
-BASES_W, BASES_R = "/weights/bases", "/runs/data/bases"  # starting models made by rebasing: weights, and their practice folder and caches
+def target_dir(target=DEFAULT_TARGET):
+    """The downloaded weights of a target: the snapshot the Hugging Face cache on the weights volume points to
+    (what snapshot_download(..., local_files_only=True) returns). `prep --target` downloads them."""
+    root = f"/weights/hf/hub/models--{TARGETS[_check_target(target)]['hf'].replace('/', '--')}"
+    return f"{root}/snapshots/{open(f'{root}/refs/main').read().strip()}"
 
 
-def base_dirs(tag=""):
-    """(model dir, practice dir) of a starting model; tag "" is the downloaded Qwen3.5-0.8B."""
+def safetensors_names(mdir):
+    """Tensor names of every .safetensors file in a folder, read from the file headers (no weights are loaded)."""
+    import json, os, struct
+    names = []
+    for f in sorted(os.listdir(mdir)):
+        if f.endswith(".safetensors"):
+            with open(os.path.join(mdir, f), "rb") as fh:
+                n = struct.unpack("<Q", fh.read(8))[0]
+                names += [k for k in json.loads(fh.read(n)) if k != "__metadata__"]
+    return names
+
+
+def arch_from(cfg, names, target="", hf=""):
+    """The architecture facts the prompt and tools state, from a config.json dict and the list of tensor names.
+    Raises if the config and the tensor names disagree (for example on which layers have full attention)."""
+    import re, collections
+    tc = cfg.get("text_config", cfg)
+    L = tc["num_hidden_layers"]
+    types = tc.get("layer_types") or ["full_attention"] * L
+    assert len(types) == L, "layer_types does not match num_hidden_layers"
+    full = [i for i, t in enumerate(types) if t == "full_attention"]
+    linear = [i for i, t in enumerate(types) if t == "linear_attention"]
+    assert len(full) + len(linear) == L, f"unknown layer types {sorted(set(types))}"
+    # the transformer blocks: the prefix whose layers 0..L-1 all have an MLP down projection (mtp.layers.* is a separate head)
+    pre = collections.Counter(m.group(1) for n in names if (m := re.fullmatch(r"(.+)\.layers\.(\d+)\.mlp\.down_proj\.weight", n)))
+    prefix = [p for p, c in pre.items() if c == L]
+    assert len(prefix) == 1, f"cannot find the {L} transformer blocks among {dict(pre)}"
+    prefix = prefix[0]
+    sub = lambda l: [n[len(f"{prefix}.layers.{l}."):] for n in names if n.startswith(f"{prefix}.layers.{l}.")]
+    order = lambda xs, pref: sorted(xs, key=lambda x: (pref.index(x) if x in pref else len(pref), x))
+    mods = lambda l: {x.split(".")[0] for x in sub(l)} - {"mlp", "input_layernorm", "post_attention_layernorm"}
+    mlp = order({x.split(".")[1] for x in sub(0) if x.startswith("mlp.") and x.endswith("_proj.weight")}, ["gate_proj", "up_proj", "down_proj"])
+    attn_mod = {m for l in full for m in mods(l)}
+    lin_mod = {m for l in linear for m in mods(l)}
+    assert len(attn_mod) == 1 and (not linear or len(lin_mod) == 1) and not (attn_mod & lin_mod), \
+        f"attention modules do not follow layer_types: full {attn_mod}, linear {lin_mod}"
+    attn_mod = attn_mod.pop()
+    attn_proj = order({x.split(".")[1] for x in sub(full[0]) if x.startswith(attn_mod + ".") and x.endswith("_proj.weight")}, ["q_proj", "k_proj", "v_proj", "o_proj"])
+    tied = bool(tc.get("tie_word_embeddings", cfg.get("tie_word_embeddings", False)))
+    lm_head = [n for n in names if n.endswith("lm_head.weight")]
+    assert tied != bool(lm_head), f"tie_word_embeddings={tied} but lm_head tensors {lm_head}"
+    k = tc.get("full_attention_interval")
+    return {"target": target, "hf": hf, "name": hf.split("/")[-1] if hf else target,
+            "layers": L, "hidden": tc["hidden_size"], "mlp": tc["intermediate_size"], "vocab": tc.get("vocab_size"),
+            "full_attn": full, "linear_attn": linear, "full_every": k if k and full == [i for i in range(L) if (i + 1) % k == 0] else None,
+            "heads": tc["num_attention_heads"], "kv_heads": tc.get("num_key_value_heads"), "head_dim": tc.get("head_dim") or tc["hidden_size"] // tc["num_attention_heads"],
+            "tied": tied, "prefix": prefix, "mlp_proj": mlp, "attn_mod": attn_mod, "attn_proj": attn_proj,
+            "linear_mod": lin_mod.pop() if linear else None, "vision": "vision_config" in cfg}
+
+
+def target_arch(target=DEFAULT_TARGET, mdir=""):
+    """arch_from for a downloaded target (needs the weights volume at /weights)."""
+    import json, os
+    mdir = mdir or target_dir(target)
+    a = arch_from(json.load(open(os.path.join(mdir, "config.json"))), safetensors_names(mdir), target, TARGETS[target]["hf"])
+    a["dir"] = mdir
+    return a
+
+
+def target_paths(target=DEFAULT_TARGET):
+    """Where a target's practice folder, cached answers and starting models live. The default target's files predate
+    the registry and stay where they were; every other target has its own folders, so answers are never mixed."""
+    if _check_target(target) == DEFAULT_TARGET:
+        return {"practice": "/runs/data/math_practice", "eval_cache": "/runs/data/eval_cache", "math500_cache": "/runs/heldout_original_cached.jsonl",
+                "reward_base": "/runs/rl/_reward_base_{}.json", "bases_w": "/weights/bases", "bases_r": "/runs/data/bases", "data": f"/runs/data/targets/{target}"}
+    r = f"/runs/data/targets/{target}"
+    return {"practice": f"{r}/practice", "eval_cache": f"{r}/eval_cache", "math500_cache": f"{r}/eval_cache/math500_original.jsonl",
+            "reward_base": r + "/reward_base_{}.json", "bases_w": f"/weights/bases/{target}", "bases_r": f"{r}/bases", "data": r}
+
+
+BASES_W, BASES_R = "/weights/bases", "/runs/data/bases"  # the default target's starting models made by rebasing: weights, and their practice folder and caches
+
+
+def base_dirs(tag="", target=DEFAULT_TARGET):
+    """(model dir, practice dir) of a starting model; tag "" is the target as downloaded."""
+    P = target_paths(target)
     if not tag:
-        return target_dir(), "/runs/data/math_practice"
-    return f"{BASES_W}/{tag}", f"{BASES_R}/{tag}/practice"
+        return target_dir(target), P["practice"]
+    return f"{P['bases_w']}/{tag}", f"{P['bases_r']}/{tag}/practice"
 
 
 # ----------------------------------------------------------------------------- evaluation sets
@@ -261,11 +358,12 @@ EVAL_SETS = {
 }
 
 
-def heldout_cache(tag="", dataset="math500"):
+def heldout_cache(tag="", dataset="math500", target=DEFAULT_TARGET):
     """The starting model's answers on an evaluation set, generated once (2 per problem, same seeds as heldout_eval)."""
+    P = target_paths(target)
     if dataset == "math500":
-        return f"{BASES_R}/{tag}/heldout_original.jsonl" if tag else "/runs/heldout_original_cached.jsonl"
-    return f"{BASES_R}/{tag}/eval_{dataset}_original.jsonl" if tag else f"/runs/data/eval_cache/{dataset}_original.jsonl"
+        return f"{P['bases_r']}/{tag}/heldout_original.jsonl" if tag else P["math500_cache"]
+    return f"{P['bases_r']}/{tag}/eval_{dataset}_original.jsonl" if tag else f"{P['eval_cache']}/{dataset}_original.jsonl"
 
 
 @app.function(image=base_src, volumes={"/heldout": heldout_vol}, timeout=1800, cpu=2, memory=8192)
@@ -311,12 +409,24 @@ def heldout_rows(port, name, items, n, grade=grade_math):
 
 # ----------------------------------------------------------------------------- prep
 @app.function(image=base_src, volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=3600, cpu=4, memory=16384)
-def prep():
-    import json, os, random, re
+def prep(target: str = DEFAULT_TARGET):
+    """The default target: download it, write MATH-500 and the practice set. Another target: download it and copy the
+    default target's practice files (problems, index, splits), so every target is diagnosed and confirmed on the same problems."""
+    import json, os, random, re, shutil
     from huggingface_hub import snapshot_download
     from datasets import load_dataset
-    p = snapshot_download(TARGET)
+    p = snapshot_download(TARGETS[_check_target(target)]["hf"])
     print("target at", p, os.listdir(p))
+    if target != DEFAULT_TARGET:
+        weights.commit()
+        src, dst = target_paths(DEFAULT_TARGET)["practice"], target_paths(target)["practice"]
+        os.makedirs(dst, exist_ok=True)
+        for f in ("problems.jsonl", "index.tsv", "splits.json", "README.txt"):
+            shutil.copy(os.path.join(src, f), os.path.join(dst, f))
+        runs.commit()
+        a = target_arch(target, p)
+        print("practice copied to", dst, "| arch", json.dumps({k: v for k, v in a.items() if k != "dir"}))
+        return a
     norm = lambda s: re.sub(r"\s+", " ", s.strip().lower())
     m500 = load_dataset("HuggingFaceH4/MATH-500")["test"]
     held = {norm(r["problem"]) for r in m500}
@@ -434,7 +544,7 @@ for line in sys.stdin:
 
 # ----------------------------------------------------------------------------- Target
 SLOTS = "/slots"  # PackedTarget: one folder per rollout, hidden from every kernel
-PACK_UTIL = {"edited": 0.30, "original": 0.15, "forward_model": 0.13}  # PackedTarget: GPU share of each rollout's edited vLLM server, the shared original server, the teacher-forced model
+PACK_UTIL = TARGETS[DEFAULT_TARGET]["pack_util"]  # PackedTarget: GPU share of each rollout's edited vLLM server, the shared original server, the teacher-forced model (per target: TARGETS)
 KERNEL_MEM = 36 * 2 ** 30  # PackedTarget: address-space limit of each python kernel, so one rollout cannot take the container's memory from the other
 
 
@@ -459,15 +569,18 @@ class _Slot:
 
 class _Core:
     """The tools of one rollout (a `_Slot`) on a container that holds the original weights."""
-    edited_util = 0.40
-    original_util = 0.40
-    tf_tokens = 40000  # tokens per batch of a teacher-forced pass
+    # edited_util, original_util, tf_tokens (tokens per teacher-forced batch): set by _setup from TARGETS
 
-    def _setup(self):
+    def _setup(self, packed=False):
         import os, json, glob, threading
-        # `base` (a modal.parameter on the classes) names a starting model made by rl.loop's rebasing: earlier edits
-        # applied to the weights, with its own cached original answers. "" is the downloaded Qwen3.5-0.8B.
-        self.mdir, self.pdir = base_dirs(getattr(self, "base", ""))
+        # `target` (a modal.parameter on the classes) is a key of TARGETS. `base` names a starting model made by rl.loop's
+        # rebasing: earlier edits applied to the weights, with its own cached original answers. "" is the target as downloaded.
+        self.tgt = _check_target(getattr(self, "target", "") or DEFAULT_TARGET)
+        spec = TARGETS[self.tgt]
+        u = spec["pack_util"] if packed else spec["util"]
+        self.edited_util, self.original_util = u["edited"], u["original"]
+        self.tf_tokens = spec["pack_tf_tokens"] if packed else spec["tf_tokens"]
+        self.mdir, self.pdir = base_dirs(getattr(self, "base", ""), self.tgt)
         os.makedirs("/work", exist_ok=True)
         for link, dst in [("/model", self.mdir), ("/practice", self.pdir)]:
             if not os.path.exists(link):
@@ -865,9 +978,10 @@ class _Core:
 @app.cls(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, block_network=True,
          timeout=150 * 60, scaledown_window=20 * 60, max_containers=1, memory=98304, cpu=8)
 class Target(_Core):
-    """One rollout per L40S: original vLLM server (8001) and edited server (8002) at 0.40 of the GPU each."""
+    """One rollout per L40S: original vLLM server (8001) and edited server (8002) at the target's `util` share each (0.8B: 0.40)."""
     rid: str = modal.parameter(default="")  # one container per value, so each rollout gets its own target
     base: str = modal.parameter(default="")  # starting model (see base_dirs); "" is the downloaded model
+    target: str = modal.parameter(default=DEFAULT_TARGET)  # a key of TARGETS
 
     @modal.enter()
     def boot(self):
@@ -926,9 +1040,7 @@ class PackedTarget(_Core):
     gid: str = modal.parameter(default="")  # one container per value; the rollouts that share it pass their own rid
     mps: int = modal.parameter(default=0)  # 1: run the GPU processes under CUDA MPS, so their kernels can overlap instead of taking turns
     base: str = modal.parameter(default="")  # starting model (see base_dirs); "" is the downloaded model
-    edited_util = PACK_UTIL["edited"]
-    original_util = PACK_UTIL["original"]
-    tf_tokens = 8192
+    target: str = modal.parameter(default=DEFAULT_TARGET)  # a key of TARGETS; GPU shares from its pack_util
 
     @modal.enter()
     def boot(self):
@@ -938,12 +1050,12 @@ class PackedTarget(_Core):
             os.makedirs("/tmp/mps", exist_ok=True); os.makedirs("/tmp/mpslog", exist_ok=True)
             os.environ["CUDA_MPS_PIPE_DIRECTORY"], os.environ["CUDA_MPS_LOG_DIRECTORY"] = "/tmp/mps", "/tmp/mpslog"
             self.mps_on = subprocess.run(["nvidia-cuda-mps-control", "-d"]).returncode == 0
-        self._setup()
+        self._setup(packed=True)
         os.makedirs("/library", exist_ok=True); os.makedirs(SLOTS, exist_ok=True)
         self.slots, self.slots_lock = {}, threading.Lock()
         self._load_hf()
         import torch
-        torch.cuda.set_per_process_memory_fraction(PACK_UTIL["forward_model"])  # past this a teacher-forced pass gets an out-of-memory error, never a vLLM server
+        torch.cuda.set_per_process_memory_fraction(TARGETS[self.tgt]["pack_util"]["forward_model"])  # past this a teacher-forced pass gets an out-of-memory error, never a vLLM server
         print("BOOT ok (packed); tensors", len(self.sd_keys))
 
     def _slot(self, rid):
@@ -1009,14 +1121,15 @@ class PackedTarget(_Core):
 
 # ----------------------------------------------------------------------------- held-out evaluation
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=90 * 60, memory=32768)
-def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: bool = False, base_tag: str = "", dataset: str = "math500"):
+def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: bool = False, base_tag: str = "", dataset: str = "math500", target: str = DEFAULT_TARGET):
     """The edit in /runs/<run_id>/work/edited against its starting model on an evaluation set (EVAL_SETS), paired by problem.
     `base_tag`: the edit was made on that starting model (rl.loop rebasing); it is compared with that model.
-    `limit`: only the first `limit` problems. Results: /runs/<run_id>/heldout.json (MATH-500) or heldout_<dataset>.json."""
+    `limit`: only the first `limit` problems. `target`: a key of TARGETS (base_tag is one of its starting models).
+    Results: /runs/<run_id>/heldout.json (MATH-500) or heldout_<dataset>.json."""
     import json, os, shutil, concurrent.futures as cf, zlib, time
     from safetensors.torch import load_file, save_file
     runs.reload()
-    mdir = base_dirs(base_tag)[0]
+    mdir = base_dirs(base_tag, target)[0]
     spec = EVAL_SETS[dataset]
     items = [json.loads(l) for l in open(spec["file"])]
     if limit:
@@ -1037,8 +1150,8 @@ def heldout_eval(run_id: str, n: int = 2, limit: int = 0, use_cached_original: b
         time.sleep(10)
         return rows
 
-    out = {"run_id": run_id, "dataset": dataset, "n_per_problem": n, "problems": len(items), "cap": GEN_CAP, "edited_tensors": sorted(edits), "base": base_tag}
-    cached = heldout_cache(base_tag, dataset)  # one fixed set of the starting model's answers, so every edit is compared with the same baseline
+    out = {"run_id": run_id, "dataset": dataset, "n_per_problem": n, "problems": len(items), "cap": GEN_CAP, "edited_tensors": sorted(edits), "base": base_tag, "target": target}
+    cached = heldout_cache(base_tag, dataset, target)  # one fixed set of the starting model's answers, so every edit is compared with the same baseline
     rows_o = None
     if use_cached_original and os.path.exists(cached):  # with a limit, the cached answers to those problems
         want = {(it["qid"], s) for it in items for s in range(n)}
@@ -1142,10 +1255,21 @@ def smoke_target():
 
 
 
+@app.function(image=offline, volumes={"/weights": weights}, timeout=600)
+def show_arch(target: str = DEFAULT_TARGET):
+    """A downloaded target's architecture as the prompt states it, and the prompt's model sentence and tensor note."""
+    from harness.prompts import model_sentence, tensor_names_text
+    a = target_arch(target)
+    return {"arch": a, "model_sentence": model_sentence(a), "tensor_names": tensor_names_text(a)}
+
+
 @app.local_entrypoint()
-def main(step: str = "prep", run_id: str = ""):
+def main(step: str = "prep", run_id: str = "", target: str = DEFAULT_TARGET):
     if step == "prep":
-        prep.remote()
+        print(prep.remote(target))
+    elif step == "arch":
+        import json
+        print(json.dumps(show_arch.remote(target), indent=1))
     elif step == "smoke":
         smoke_target.remote()
     elif step == "heldout":
@@ -1154,4 +1278,4 @@ def main(step: str = "prep", run_id: str = ""):
         print("changed bf16 entries", paper_edit.remote("control-paper-edit"))
         print("SPAWNED", heldout_eval.spawn("control-paper-edit").object_id)
     else:
-        raise SystemExit("step must be prep, smoke, heldout or control")
+        raise SystemExit("step must be prep, arch, smoke, heldout or control")

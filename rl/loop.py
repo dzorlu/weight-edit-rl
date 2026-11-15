@@ -1,4 +1,5 @@
-"""RL loop: train Inkling 2 Small (on Tinker) to be a better weight editor of Qwen3.5-0.8B (on Modal).
+"""RL loop: train Inkling 2 Small (on Tinker) to be a better weight editor of a target model (on Modal; Qwen3.5-0.8B by
+default, `--target` picks another key of harness.target.TARGETS).
 
 One RL step: sample a group of rollouts with the current checkpoint, score each submitted edit,
 take one policy-gradient step on Tinker, save a checkpoint.
@@ -10,20 +11,23 @@ take one policy-gradient step on Tinker, save a checkpoint.
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32
     uvx modal run --detach -m rl.loop::rl --exp run1 --steps 8 --group-size 8 --forward-budget 32 --rollouts-per-gpu 2   # two rollouts share each L40S
     uvx modal run --detach -m rl.loop::evaluate --name ev1 --checkpoint tinker://... --dataset gsm8k_test   # rollouts with no update, edits scored
+    uvx modal run --detach -m rl.loop::prep_target --target qwen3.5-2b   # another target: download, practice files, cached answers
+    uvx modal run --detach -m rl.loop::sweep --target qwen3.5-2b         # its accuracy and hit-cap rate on 200 MATH train problems
 
 Cost bounds: each rollout holds one L40S (or half of one with --rollouts-per-gpu 2) for at most `rollout_minutes`; the whole run stops at `hours`.
 Outputs: /runs/rl/<exp>/ on the runs volume (steps.jsonl, one transcript per rollout).
 """
 import modal
 from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PackedTarget, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval
-from harness.target import weights, offline, _Core, base_dirs, heldout_cache, heldout_rows, start_vllm, stop_proc, BASES_W, BASES_R, EVAL_SETS, prep_eval_set
-from harness.prompts import PROMPT, GUIDE
+from harness.target import weights, offline, _Core, base_dirs, heldout_cache, heldout_rows, start_vllm, stop_proc, EVAL_SETS, prep_eval_set
+from harness.target import TARGETS, DEFAULT_TARGET, target_arch, target_paths, target_dir, prep, summarize
+from harness.prompts import make_prompt, make_guide, tensor_names_text, layer_ranges, QWEN35_08B
 
 MODEL = "thinkingmachines/Inkling-2-Small:peft:262144"  # 256K-context variant; a rollout is one long sequence
 PRICE = dict(prefill=0.30, cached=0.03, sample=1.00, train=3.00)  # $ per million tokens
 rl_image = modal.Image.debian_slim(python_version="3.12").pip_install("tinker-cookbook", "openai").add_local_python_source(*SRC)
 
-TOOLS = [
+TOOLS_TEMPLATE = [
     {"name": "python", "description": "Run code in the persistent Python kernel. If the last line is an expression, its value is shown.",
      "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "Python source"}}, "required": ["code"]}},
     # Flat arguments: Inkling sometimes drops a closing brace when the request is nested three objects deep.
@@ -39,10 +43,20 @@ TOOLS = [
          "chats": {"type": "array", "description": "teacher_forced: chats, each a list of {role, content} messages"},
          "enable_thinking": {"type": "boolean", "description": "teacher_forced with chats: use the thinking template"},
          "token_logprobs": {"type": "boolean"}, "topk": {"type": "integer", "description": "at most 50"},
-         "hidden_states": {"type": "array", "items": {"type": "integer"}, "description": "layers 0..24"},
-         "mlp_act": {"type": "array", "items": {"type": "integer"}, "description": "layers 0..23"}},
+         "hidden_states": {"type": "array", "items": {"type": "integer"}, "description": "layers <<HS>>"},
+         "mlp_act": {"type": "array", "items": {"type": "integer"}, "description": "layers <<MLP>>"}},
       "required": ["type", "model"]}},
 ]
+
+
+def tools_for(a):
+    """The tool definitions with the target's layer ranges."""
+    import json
+    hs, mlp = layer_ranges(a)
+    return json.loads(json.dumps(TOOLS_TEMPLATE).replace("<<HS>>", hs).replace("<<MLP>>", mlp))
+
+
+TOOLS = tools_for(QWEN35_08B)
 RETURN_KEYS = ("token_logprobs", "topk", "hidden_states", "mlp_act")
 WEB_TOOL = {"name": "web_search", "description": "Search the web (Exa). Returns titles, links and short excerpts. Use it for methods and background, for example interpretability techniques.",
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}
@@ -67,7 +81,7 @@ Do not use these baseline problems to confirm an edit.
 SANDBOX NOTES.
 - Practice ids look like "math/geometry/461" and "gsm8k/2754". /practice/index.tsv lists every problem (id, source, level, subject); /practice/problems.jsonl has the full text and reference solutions. Do not guess ids.
 - /practice/splits.json holds ready-made disjoint lists of ids: "baseline" (already answered by the original weights, see above), "select" (256 problems for choosing between edits), "confirm_1" and "confirm_2" (256 each, never to be used for a choice), and "extra" (the rest). Use these; do not build your own.
-- Tensor names: model.language_model.layers.<L>.mlp.{{gate_proj,up_proj,down_proj}}.weight for L = 0..23. Layers 3, 7, 11, 15, 19, 23 have full attention (…layers.<L>.self_attn.{{q_proj,k_proj,v_proj,o_proj}}.weight); the other layers have linear attention (…layers.<L>.linear_attn.…, see NAMES).
+- Tensor names: {tensors}
 - load(name) returns a float32 torch tensor. save_edit(name, tensor) takes a torch tensor of the same shape; convert numpy arrays with torch.from_numpy(a).float().
 - tok is a tokenizers.Tokenizer: tok.encode(text).ids, tok.decode(ids), tok.token_to_id(s).
 - The original weights' answers to every problem in "select", "confirm_1" and "confirm_2" (2 samples each, 8192-token cap) are already in /practice/original/<split>.jsonl. Read them there; do not spend a forward pass on them. A generation with "model": "both" on these problems only has to run the edited weights, so it returns in about half the time. This holds for "n": 2 or 1 and "max_tokens": 8192.
@@ -208,10 +222,14 @@ SUBMIT_RULE_RL = 'Always finish with your best edit saved in /work/edited. Your 
 
 BASE_TEXT = """
 
-STARTING WEIGHTS. The weights you are given are Qwen3.5-0.8B with an earlier edit already applied. In this session "original weights" means these starting weights: load_original, the cached original answers in /practice and your score all refer to them. Your task is to improve on them."""
+STARTING WEIGHTS. The weights you are given are {name} with an earlier edit already applied. In this session "original weights" means these starting weights: load_original, the cached original answers in /practice and your score all refer to them. Your task is to improve on them."""
 
 
-def editor_prompt(forward_budget, web=False, known=None, rebased=False):
+def editor_prompt(forward_budget, web=False, known=None, rebased=False, arch=None):
+    """The RL editor's prompt; every architecture statement comes from `arch` (target_arch; default Qwen3.5-0.8B)."""
+    arch = arch or QWEN35_08B
+    PROMPT, GUIDE = make_prompt(arch), make_guide(arch)
+    hs, mlp = layer_ranges(arch)
     a, b = PROMPT.index("WHAT COUNTS."), PROMPT.index("WHAT YOU HAVE.")
     body = PROMPT[:a] + GUIDE + "\n\n" + PROMPT[b:]
     for old in ("a budget of 50 forward passes in total", "When all 50 forward passes are used"):
@@ -220,7 +238,8 @@ def editor_prompt(forward_budget, web=False, known=None, rebased=False):
     for old, new in (
         ("Call the `forward` tool with the parameter `request` set to JSON of this form:", "Call the `forward` tool with these arguments, given directly (not wrapped in a `request` object):"),
         ("Call the `forward` tool with `request` set to:", "Call the `forward` tool with these arguments, given directly:"),
-        ('"return": {"token_logprobs": true, "topk": k (at most 50), "hidden_states": [layers 0..24], "mlp_act": [layers 0..23]}}', '"token_logprobs": true, "topk": k (at most 50), "hidden_states": [layers 0..24], "mlp_act": [layers 0..23]}'),
+        (f'"return": {{"token_logprobs": true, "topk": k (at most 50), "hidden_states": [layers {hs}], "mlp_act": [layers {mlp}]}}}}',
+         f'"token_logprobs": true, "topk": k (at most 50), "hidden_states": [layers {hs}], "mlp_act": [layers {mlp}]}}'),
     ):
         assert old in body, old
         body = body.replace(old, new)
@@ -232,11 +251,11 @@ def editor_prompt(forward_budget, web=False, known=None, rebased=False):
     if known:
         a, b = body.index(DIAG_OLD_START), body.index(SPLIT_OLD_END)  # replaces steps 1 and 2 of the guide
         body = body[:a] + DIAG_NEW.rstrip() + body[b:]
-        extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"])
+        extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"], tensors=tensor_names_text(arch))
     if web:
         extra += WEB_TEXT
     if rebased:
-        extra += BASE_TEXT
+        extra += BASE_TEXT.format(name=arch["name"])
     b = body.index("HOW TO WORK.")
     return body[:b].rstrip() + extra + "\n\n" + body[b:]
 
@@ -296,10 +315,11 @@ print("\n".join(lines))
 
 
 @app.function(image=base_src, volumes={"/runs": runs}, timeout=900)
-def prep_practice_index(n_math: int = 192, n_gsm: int = 64):
-    """Once per target: a compact index of the practice problems and ready-made disjoint splits, so editors do not guess ids."""
+def prep_practice_index(n_math: int = 192, n_gsm: int = 64, target: str = DEFAULT_TARGET):
+    """Once: a compact index of the practice problems and ready-made disjoint splits, so editors do not guess ids.
+    (Other targets get copies of the default target's files from `prep`, so all targets share the splits.)"""
     import json, random
-    d = "/runs/data/math_practice"
+    d = target_paths(target)["practice"]
     rows = [json.loads(l) for l in open(f"{d}/problems.jsonl")]
     with open(f"{d}/index.tsv", "w") as f:
         f.write("id\tsource\tlevel\tsubject\n")
@@ -319,10 +339,11 @@ def prep_practice_index(n_math: int = 192, n_gsm: int = 64):
 
 
 @app.function(image=rl_image, volumes={"/runs": runs}, timeout=3600)
-async def prep_baseline(n_math: int = 192, n_gsm: int = 64):
-    """Once per target: the original weights' answers on practice problems, so rollouts need not regenerate them."""
+async def prep_baseline(n_math: int = 192, n_gsm: int = 64, target: str = DEFAULT_TARGET):
+    """Once per target: the original weights' answers on practice problems, so rollouts need not regenerate them.
+    (prep_target does the same through gen_base, on one GPU at 0.90.)"""
     import json
-    tgt = Target.with_options(scaledown_window=60)(rid="baseline")
+    tgt = Target.with_options(scaledown_window=60)(rid="baseline", target=target)
     out = await tgt.py.remote.aio(
         "import json, random\nrows = [json.loads(l) for l in open('/practice/problems.jsonl')]\n"
         "m = [r['id'] for r in rows if r['source'] == 'math_train']; g = [r['id'] for r in rows if r['source'] == 'gsm8k_train']\n"
@@ -335,14 +356,14 @@ async def prep_baseline(n_math: int = 192, n_gsm: int = 64):
 
 
 @app.function(image=rl_image, volumes={"/runs": runs}, timeout=3600)
-async def prep_originals(splits: str = "select,confirm_1,confirm_2"):
+async def prep_originals(splits: str = "select,confirm_1,confirm_2", target: str = DEFAULT_TARGET):
     """Once per target: the original weights' answers on the ready-made splits. The forward tool serves them from this cache."""
     import asyncio, json
     runs.reload()
-    sp = json.load(open("/runs/data/math_practice/splits.json"))
+    sp = json.load(open(f"{target_paths(target)['practice']}/splits.json"))
 
     async def one(name):
-        tgt = Target.with_options(scaledown_window=60)(rid=f"originals-{name}")
+        tgt = Target.with_options(scaledown_window=60)(rid=f"originals-{name}", target=target)
         ok, res = await tgt.forward.remote.aio(json.dumps({"type": "generate", "model": "original", "problems": sp[name], "n": 2, "max_tokens": GEN_CAP}))
         assert ok, res
         print(await tgt.py.remote.aio(
@@ -356,14 +377,14 @@ async def prep_originals(splits: str = "select,confirm_1,confirm_2"):
 
 # ----------------------------------------------------------------------------- rebasing: a new starting model
 @app.function(image=offline, volumes={"/weights": weights, "/runs": runs}, timeout=40 * 60, cpu=8, memory=32768)
-def make_base(tag: str, prev_tag: str, edit_run: str):
+def make_base(tag: str, prev_tag: str, edit_run: str, target: str = DEFAULT_TARGET):
     """A starting model `tag`: the starting model `prev_tag` with the edit of /runs/<edit_run>/work/edited applied
     (each edited tensor replaces the one in the weights), plus a practice folder holding the problem files."""
     import json, os, shutil
     from safetensors.torch import load_file, save_file
     runs.reload()
-    src, psrc = base_dirs(prev_tag)
-    dst, pdst = base_dirs(tag)
+    src, psrc = base_dirs(prev_tag, target)
+    dst, pdst = base_dirs(tag, target)
     ed = f"/runs/{edit_run}/work/edited"
     edits = {f[:-len(".safetensors")]: load_file(os.path.join(ed, f))["t"] for f in sorted(os.listdir(ed)) if f.endswith(".safetensors")}
     assert edits, f"no edited tensors in {ed}"
@@ -383,57 +404,76 @@ def make_base(tag: str, prev_tag: str, edit_run: str):
     os.makedirs(pdst, exist_ok=True)
     for f in ("problems.jsonl", "index.tsv", "splits.json", "README.txt"):
         shutil.copy(os.path.join(psrc, f), os.path.join(pdst, f))
-    json.dump({"tag": tag, "prev": prev_tag, "edit_run": edit_run, "tensors": sorted(edits)}, open(f"{BASES_R}/{tag}/meta.json", "w"), indent=1)
+    json.dump({"tag": tag, "prev": prev_tag, "edit_run": edit_run, "tensors": sorted(edits), "target": target},
+              open(f"{target_paths(target)['bases_r']}/{tag}/meta.json", "w"), indent=1)
     weights.commit(); runs.commit()
     return sorted(edits)
 
 
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=100 * 60, memory=65536, cpu=8)
-def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2, reward_items: int = 128):
+def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2, reward_items: int = 128, target: str = DEFAULT_TARGET, limit: int = 0):
     """The starting model's own answers, generated once and served from cache, as for the downloaded model.
-    part 0: the baseline answers and their summary, the reward set, the select split. part 1: the two confirm splits.
-    part 2: the test set (only needed for test scoring, so the RL loop does not wait for it)."""
+    tag "" is the target as downloaded (prep_target). part 0: the baseline answers and their summary, the reward set,
+    the select split. part 1: the two confirm splits. part 2: the test set (only needed for test scoring, so the RL loop
+    does not wait for it). part 3: the test set and gsm8k_test.
+    limit k (tests): only the first k problems of each list, written under /runs/data/targets/<target>/_limit_test/, never to a cache."""
     import json, os, threading, time
     runs.reload()
     if not reward_items_json:
         reward_items_json = json.dumps([json.loads(l) for l in open("/heldout/rl/reward_math.jsonl")][:reward_items])
-    mdir, pdir = base_dirs(tag)
+    P = target_paths(target)
+    mdir, pdir = base_dirs(tag, target)
+    out_pdir = pdir
+    reward_path = f"{P['bases_r']}/{tag}/reward_base_{{}}x{reward_n}.json" if tag else P["reward_base"].format(f"{{}}x{reward_n}")
+    cache_of = lambda ds: heldout_cache(tag, ds, target)
+    cut = lambda xs: xs[:limit] if limit else xs
+    if limit:  # a test: same code, outputs kept away from every cache
+        tdir = f"{P['data']}/_limit_test/{tag or 'original'}"
+        out_pdir, reward_path = f"{tdir}/practice", f"{tdir}/reward_base_{{}}x{reward_n}.json"
+        cache_of = lambda ds: f"{tdir}/eval_{ds}_original.jsonl"
     proc = start_vllm(mdir, "original", 8001, 0.90, GEN_CAP + 3000)
     sp = json.load(open(f"{pdir}/splits.json"))
     practice = {json.loads(l)["id"]: json.loads(l) for l in open(f"{pdir}/problems.jsonl")}
     items = lambda ids: [{"qid": i, "source": practice[i]["source"], "answer": practice[i]["answer"],
-                          "prompt": practice[i]["problem"] + "\n\nPut your final answer in \\boxed{}."} for i in ids]
+                          "prompt": practice[i]["problem"] + "\n\nPut your final answer in \\boxed{}."} for i in cut(ids)]
     gen = lambda its, n: _Core._gen(None, "original", 8001, its, n, GEN_CAP)  # the forward tool's generation: same prompts, seeds, sampling
     write = lambda path, rows: (os.makedirs(os.path.dirname(path), exist_ok=True), open(path, "w").write("".join(json.dumps(r) + "\n" for r in rows)))
     jobs, out, t = {}, {}, time.time()
     def baseline():
         rows = gen(items(sp["baseline"]), 2)
         write("/tmp/bw/gen_1.jsonl", rows)
-        exec(BASELINE_CODE.replace("/work/gen_1.jsonl", "/tmp/bw/gen_1.jsonl").replace("/practice/baseline", f"{pdir}/baseline"), {})
+        os.makedirs(f"{out_pdir}/baseline", exist_ok=True)
+        exec(BASELINE_CODE.replace("/work/gen_1.jsonl", "/tmp/bw/gen_1.jsonl").replace("/practice/baseline", f"{out_pdir}/baseline"), {})
         out["baseline"] = len(rows)
     def reward():
         its = [{"qid": "reward/" + it["qid"], "source": "reward", "answer": it["answer"], "prompt": it["problem"] + "\n\nPut your final answer in \\boxed{}."}
-               for it in json.loads(reward_items_json)]
+               for it in cut(json.loads(reward_items_json))]
         rows = [{"qid": r["qid"], "sample": r["sample"], "correct": bool(r["correct"]), "tokens": r["tokens"], "finish": r["finish"]} for r in gen(its, reward_n)]
-        json.dump(rows, open(f"{BASES_R}/{tag}/reward_base_{len(its)}x{reward_n}.json", "w"))
+        rp = reward_path.format(len(json.loads(reward_items_json)))  # named by the full reward set, as rl_run looks it up
+        os.makedirs(os.path.dirname(rp), exist_ok=True)
+        json.dump(rows, open(rp, "w"))
         out["reward"] = round(sum(r["correct"] for r in rows) / len(rows), 4)
-    def test():
-        its = [json.loads(l) for l in open("/heldout/math500.jsonl")]
-        rows = heldout_rows(8001, "original", its, 2)
-        write(heldout_cache(tag), rows)
-        out["test"] = round(sum(bool(r["correct"]) for r in rows) / len(rows), 4)
+    def test(ds):
+        def f():
+            its = cut([json.loads(l) for l in open(EVAL_SETS[ds]["file"])])
+            rows = heldout_rows(8001, "original", its, 2, EVAL_SETS[ds]["grade"])
+            write(cache_of(ds), rows)
+            out[ds] = round(sum(bool(r["correct"]) for r in rows) / len(rows), 4)
+        return f
     def split(name):
         def f():
             rows = gen(items(sp[name]), 2)
-            write(f"{pdir}/original/{name}.jsonl", rows)
+            write(f"{out_pdir}/original/{name}.jsonl", rows)
             out[name] = round(sum(r["correct"] for r in rows) / len(rows), 4)
         return f
     if part == 0:
         jobs = {"baseline": baseline, "reward": reward, "select": split("select")}
     elif part == 1:
         jobs = {n: split(n) for n in ("confirm_1", "confirm_2")}
+    elif part == 2:
+        jobs = {"math500": test("math500")}
     else:
-        jobs = {"test": test}
+        jobs = {ds: test(ds) for ds in ("math500", "gsm8k_test")}
     ths = [threading.Thread(target=f, name=n) for n, f in jobs.items()]
     [th.start() for th in ths]; [th.join() for th in ths]
     stop_proc(proc)
@@ -444,14 +484,15 @@ def gen_base(tag: str, part: int, reward_items_json: str = "", reward_n: int = 2
     return out
 
 
-@app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol}, secrets=[modal.Secret.from_name("tinker"), modal.Secret.from_name("exa")],
+@app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol, "/weights": weights}, secrets=[modal.Secret.from_name("tinker"), modal.Secret.from_name("exa")],
               timeout=int(11.5 * 3600), nonpreemptible=True, cpu=4, memory=16384)
 async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
                  reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = "",
                  rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "",
                  mode: str = "rl", eval_dataset: str = "math500", eval_limit: int = 0, eval_parallel: int = 4,
-                 advantage: str = "grpo", adv_scale: float = 0.10):
-    """start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
+                 advantage: str = "grpo", adv_scale: float = 0.10, target: str = DEFAULT_TARGET):
+    """target: a key of harness.target.TARGETS; the prompt, tools, caches and starting models are that target's.
+    start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
     mode "eval" (rl.loop::evaluate): one group of rollouts from `start_from` (a state or sampler path; "" is the untrained
     editor) with no training update, written to /runs/eval/<exp>/; every submitted edit is then scored on `eval_dataset`.
     rebase_every k: after every k steps, the best-rewarded submitted edit of those k steps is applied to the starting model.
@@ -491,11 +532,13 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         tc = await asyncio.to_thread(lambda: svc.create_lora_training_client(base_model=MODEL, rank=32).result())
     items = [json.loads(l) for l in open("/heldout/rl/reward_math.jsonl")][:reward_items]
     items_json = json.dumps(items)
-    pdir_of = lambda tag: f"{BASES_R}/{tag}/practice" if tag else "/runs/data/math_practice"
+    arch = target_arch(target)  # from the target's config.json and safetensors headers
+    TP = target_paths(target)
+    pdir_of = lambda tag: f"{TP['bases_r']}/{tag}/practice" if tag else TP["practice"]
     bm = f"{pdir_of('')}/baseline/meta.json"
     known = json.load(open(bm)) if os.path.exists(bm) else None
-    prompt_text = editor_prompt(forward_budget, web, known)
-    tools = TOOLS + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
+    prompt_text = editor_prompt(forward_budget, web, known, arch=arch)
+    tools = tools_for(arch) + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
     lib_dir = f"{d}/_library" if evaluating else f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
     os.makedirs(lib_dir, exist_ok=True)
     if not os.path.exists(f"{lib_dir}/INDEX.md"):
@@ -515,7 +558,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                     open(path, "a").write("\n".join(add) + "\n")
             elif not os.path.exists(path) or len(text) > os.path.getsize(path):
                 open(path, "w").write(text)
-    json.dump({"exp": exp, "model": MODEL, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
+    json.dump({"exp": exp, "model": MODEL, "target": target, "arch": {k: v for k, v in arch.items() if k != "dir"}, "steps": steps, "group_size": group_size, "forward_budget": forward_budget, "rollout_minutes": rollout_minutes,
                "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "advantage": advantage, "adv_scale": adv_scale, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
                "rebase_every": rebase_every, "start_base": start_base, "update_check": update_check, "start_from": start_from,
                "baseline_given": bool(known), "mode": mode, "eval_dataset": eval_dataset if evaluating else None, "eval_limit": eval_limit,
@@ -536,35 +579,35 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         pdir = pdir_of(tag)
         kn = json.load(open(f"{pdir}/baseline/meta.json")) if os.path.exists(f"{pdir}/baseline/meta.json") else None
         if tag:
-            rows = json.load(open(f"{BASES_R}/{tag}/reward_base_{len(items)}x{reward_n}.json"))
+            rows = json.load(open(f"{TP['bases_r']}/{tag}/reward_base_{len(items)}x{reward_n}.json"))
         else:
-            base_cache = f"/runs/rl/_reward_base_{len(items)}x{reward_n}.json"  # the original weights' answers on the reward set never change
+            base_cache = TP["reward_base"].format(f"{len(items)}x{reward_n}")  # the original weights' answers on the reward set never change
             if os.path.exists(base_cache):
                 rows = json.load(open(base_cache))
             else:
-                rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base").reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
+                rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base", target=target).reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
                 json.dump(rows, open(base_cache, "w"))
         ok = {(r["qid"], r["sample"]): r["correct"] for r in rows}
-        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag)), "ok": ok, "acc": sum(ok.values()) / len(ok)}
+        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch), "ok": ok, "acc": sum(ok.values()) / len(ok)}
         slog({"event": "reward_base", "base": tag, "answers": len(ok), "accuracy": round(B["acc"], 4),
               "hit_cap": round(sum(r["finish"] == "length" for r in rows) / len(rows), 4), "seconds": round(time.time() - t)})
         return B
 
     B = await load_base(start_base)
     cache_call = None
-    if evaluating and not eval_limit and not os.path.exists(heldout_cache(start_base, eval_dataset)):
+    if evaluating and not eval_limit and not os.path.exists(heldout_cache(start_base, eval_dataset, target)):
         # the starting model's answers on the evaluation set, generated once while the rollouts run
-        cache_call = await heldout_eval.spawn.aio(f"eval/{exp}/_original", 2, 0, True, start_base, eval_dataset)
+        cache_call = await heldout_eval.spawn.aio(f"eval/{exp}/_original", 2, 0, True, start_base, eval_dataset, target)
 
     async def rollout(sampler, rid, gid, B):
         base_ok, prompt_text = B["ok"], B["prompt"]
         t0 = time.time()
         deadline = min(t0 + rollout_minutes * 60, run_deadline)
         if rollouts_per_gpu > 1:  # one container per gid; every call names the rollout
-            obj = PackedTarget.with_options(scaledown_window=300)(gid=gid, base=B["tag"])
+            obj = PackedTarget.with_options(scaledown_window=300)(gid=gid, base=B["tag"], target=target)
             call = lambda m, *a: getattr(obj, m).remote.aio(rid, *a)
         else:
-            obj = Target.with_options(scaledown_window=300)(rid=rid, base=B["tag"])
+            obj = Target.with_options(scaledown_window=300)(rid=rid, base=B["tag"], target=target)
             call = lambda m, *a: getattr(obj, m).remote.aio(*a)
         n_repaired = 0
         messages = renderer.create_conversation_prefix_with_tools(tools, system_prompt="")  # Inkling's own tool-call format
@@ -807,7 +850,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             infos = {f"{root}/{exp}/work/{info['rid']}": info for _, info, _ in out}
             summary = await score_edits(f"eval/{exp}", [p for p, i in infos.items() if i["ok"]], eval_dataset, start_base, eval_limit, eval_parallel,
                                         {p: i["reward"] for p, i in infos.items() if i["ok"]},
-                                        extra={"checkpoint": start_from or "untrained", "failed_rollouts": [i["rid"] for i in infos.values() if not i["ok"]]})
+                                        extra={"checkpoint": start_from or "untrained", "failed_rollouts": [i["rid"] for i in infos.values() if not i["ok"]]}, target=target)
             slog({"event": "done", "summary": summary, "minutes_total": round((time.time() - T0) / 60, 1)})
             return summary
         if len(set(rewards)) >= 2:
@@ -867,9 +910,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             n_base += 1
             tag, t3 = f"{exp}-k{n_base}", time.time()
             try:
-                tensors = await make_base.remote.aio(tag, B["tag"], f"rl/{exp}/work/{info['rid']}")
-                parts = await asyncio.gather(gen_base.remote.aio(tag, 0, items_json, reward_n), gen_base.remote.aio(tag, 1, items_json, reward_n))
-                await gen_base.spawn.aio(tag, 2, items_json, reward_n)  # the test set's cache, for test scoring; not waited for
+                tensors = await make_base.remote.aio(tag, B["tag"], f"rl/{exp}/work/{info['rid']}", target)
+                parts = await asyncio.gather(gen_base.remote.aio(tag, 0, items_json, reward_n, target=target), gen_base.remote.aio(tag, 1, items_json, reward_n, target=target))
+                await gen_base.spawn.aio(tag, 2, items_json, reward_n, target=target)  # the test set's cache, for test scoring; not waited for
                 prev = B
                 B = await load_base(tag)
                 slog({"event": "rebase", "step": step, "base": tag, "previous": prev["tag"], "from_rollout": info["rid"], "its_reward": r_best,
@@ -885,10 +928,14 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 @app.local_entrypoint()
 def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
        reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = "", rollouts_per_gpu: int = 1,
-       rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "", advantage: str = "grpo", adv_scale: float = 0.10):
-    """advantage: "grpo" = (reward - group mean) / group spread; "mean" = (reward - group mean) / adv_scale (Dr. GRPO)."""
+       rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "", advantage: str = "grpo", adv_scale: float = 0.10,
+       target: str = DEFAULT_TARGET):
+    """advantage: "grpo" = (reward - group mean) / group spread; "mean" = (reward - group mean) / adv_scale (Dr. GRPO).
+    target: a key of harness.target.TARGETS (run prep_target for it first)."""
+    if target not in TARGETS:
+        raise SystemExit(f"target must be one of {sorted(TARGETS)}")
     call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library, rollouts_per_gpu,
-                        rebase_every, update_check, start_base, force_rewards, advantage=advantage, adv_scale=adv_scale)
+                        rebase_every, update_check, start_base, force_rewards, advantage=advantage, adv_scale=adv_scale, target=target)
     print("SPAWNED", call.object_id)
 
 
@@ -898,8 +945,10 @@ async def test_step_edits(exp: str, steps: str = "0", parallel: int = 2):
     Only the edited side is generated; the original side comes from one cached set of answers."""
     import asyncio, json, os, shutil
     runs.reload()
-    cached = "/runs/heldout_original_cached.jsonl"
-    if not os.path.exists(cached):
+    cf = f"/runs/rl/{exp}/config.json"
+    target = (json.load(open(cf)).get("target") if os.path.exists(cf) else None) or DEFAULT_TARGET  # runs before the registry are the default target
+    cached = heldout_cache("", "math500", target)
+    if not os.path.exists(cached) and target == DEFAULT_TARGET:
         shutil.copy("/runs/inkling2s-qwen08-math-methods-1/heldout/original.jsonl", cached)
         await runs.commit.aio()
     sem = asyncio.Semaphore(parallel)
@@ -916,7 +965,7 @@ async def test_step_edits(exp: str, steps: str = "0", parallel: int = 2):
         if os.path.exists(f"/runs/{path}/heldout.json"):
             return rid, json.load(open(f"/runs/{path}/heldout.json"))
         async with sem:
-            return rid, await heldout_eval.remote.aio(path, 2, 0, True, base_of.get(int(rid.rsplit("-s", 1)[1].split("-")[0]), ""))
+            return rid, await heldout_eval.remote.aio(path, 2, 0, True, base_of.get(int(rid.rsplit("-s", 1)[1].split("-")[0]), ""), "math500", target)
 
     rids = sorted(d for d in os.listdir(f"/runs/rl/{exp}/work") if any(d.startswith(f"{exp}-s{s}-") for s in steps.split(",")))
     res = await asyncio.gather(*[one(r) for r in rids])
@@ -932,12 +981,12 @@ async def test_step_edits(exp: str, steps: str = "0", parallel: int = 2):
 
 
 @app.local_entrypoint()
-def rebase(tag: str, edit_run: str, prev: str = ""):
+def rebase(tag: str, edit_run: str, prev: str = "", target: str = DEFAULT_TARGET):
     """By hand: a starting model `tag` = starting model `prev` + the edit in /runs/<edit_run>/work/edited, with its caches."""
     import time
     t = time.time()
-    print("tensors", len(make_base.remote(tag, prev, edit_run)), round(time.time() - t), "s")
-    calls = [gen_base.spawn(tag, k) for k in (0, 1, 2)]
+    print("tensors", len(make_base.remote(tag, prev, edit_run, target)), round(time.time() - t), "s")
+    calls = [gen_base.spawn(tag, k, target=target) for k in (0, 1, 2)]
     print([c.get() for c in calls], round(time.time() - t), "s")
 
 
@@ -947,7 +996,7 @@ def test(exp: str, steps: str = "0", parallel: int = 2):
 
 
 # ----------------------------------------------------------------------------- evaluating an editor checkpoint
-async def score_edits(out, paths, dataset, base_tag, limit=0, parallel=4, rewards=None, extra=None):
+async def score_edits(out, paths, dataset, base_tag, limit=0, parallel=4, rewards=None, extra=None, target=DEFAULT_TARGET):
     """Score the edit in /runs/<path>/work/edited of each path on `dataset` against starting model `base_tag`, paired
     by problem (heldout_eval, with the starting model's answers cached per (base, dataset)). A path without an edit scores 0.
     Writes /runs/<out>/scores.json (one row per path) and /runs/<out>/summary.json (mean and standard error of the
@@ -955,9 +1004,9 @@ async def score_edits(out, paths, dataset, base_tag, limit=0, parallel=4, reward
     import asyncio, json, os, time
     t0 = time.time()
     await runs.reload.aio()
-    cached = heldout_cache(base_tag, dataset)
+    cached = heldout_cache(base_tag, dataset, target)
     if not limit and not os.path.exists(cached):  # once, before the edits, so they share one set of original answers
-        await heldout_eval.remote.aio(f"{out}/_original", 2, 0, True, base_tag, dataset)
+        await heldout_eval.remote.aio(f"{out}/_original", 2, 0, True, base_tag, dataset, target)
         await runs.reload.aio()
     sem = asyncio.Semaphore(parallel)
     has_edit = lambda p: os.path.isdir(f"/runs/{p}/work/edited") and any(f.endswith(".safetensors") for f in os.listdir(f"/runs/{p}/work/edited"))
@@ -968,7 +1017,7 @@ async def score_edits(out, paths, dataset, base_tag, limit=0, parallel=4, reward
             return {**row, "edit": False, "gain_pp": 0.0}
         async with sem:
             try:
-                h = await heldout_eval.remote.aio(p, 2, limit, True, base_tag, dataset)
+                h = await heldout_eval.remote.aio(p, 2, limit, True, base_tag, dataset, target)
             except Exception as e:
                 return {**row, "edit": True, "error": repr(e)[:300]}
         pr = h["paired_edited_minus_original"]
@@ -982,7 +1031,7 @@ async def score_edits(out, paths, dataset, base_tag, limit=0, parallel=4, reward
     k = len(g)
     mean = sum(g) / k if k else None
     se = (sum((x - mean) ** 2 for x in g) / (k - 1)) ** 0.5 / k ** 0.5 if k > 1 else None
-    summary = {"dataset": dataset, "base": base_tag or "original", "problems": limit or "all", "answers_per_problem": 2,
+    summary = {"dataset": dataset, "target": target, "base": base_tag or "original", "problems": limit or "all", "answers_per_problem": 2,
                "scored": k, "with_edit": sum(r.get("edit", False) for r in rows), "errors": [r["run"] for r in rows if "error" in r],
                "gain_mean_pp": round(mean, 2) if mean is not None else None, "gain_se_pp": round(se, 2) if se is not None else None,
                "gains_pp": g, "reward_mean_pp": round(sum(rw) / len(rw), 2) if rw else None, "minutes": round((time.time() - t0) / 60, 1), **(extra or {})}
@@ -995,7 +1044,7 @@ async def score_edits(out, paths, dataset, base_tag, limit=0, parallel=4, reward
 
 
 @app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol}, timeout=int(8 * 3600))
-async def eval_score(name: str, edits: str, dataset: str = "math500", base_tag: str = "", limit: int = 0, parallel: int = 4):
+async def eval_score(name: str, edits: str, dataset: str = "math500", base_tag: str = "", limit: int = 0, parallel: int = 4, target: str = DEFAULT_TARGET):
     """Score existing edits (comma-separated run paths under /runs, e.g. rl/nolib1/work/nolib1-s1-r0) into /runs/eval/<name>/;
     their reward-set rewards are read from the RL run's steps.jsonl when there is one."""
     import json, os
@@ -1010,40 +1059,44 @@ async def eval_score(name: str, edits: str, dataset: str = "math500", base_tag: 
                 for i in r.get("rollouts") or []:
                     if i.get("ok") and i["rid"] == p.rsplit("/", 1)[1]:
                         rewards[p] = i["reward"]
-    return await score_edits(f"eval/{name}", paths, dataset, base_tag, limit, parallel, rewards, extra={"edits": paths})
+    return await score_edits(f"eval/{name}", paths, dataset, base_tag, limit, parallel, rewards, extra={"edits": paths}, target=target)
 
 
 @app.local_entrypoint()
 def evaluate(name: str, checkpoint: str = "", base: str = "original", n: int = 8, dataset: str = "math500", limit: int = 0,
-             forward_budget: int = 32, rollout_minutes: int = 120, rollouts_per_gpu: int = 2, reward_items: int = 128, parallel: int = 4, edits: str = ""):
+             forward_budget: int = 32, rollout_minutes: int = 120, rollouts_per_gpu: int = 2, reward_items: int = 128, parallel: int = 4, edits: str = "",
+             target: str = DEFAULT_TARGET):
     """Evaluate an editor checkpoint: n rollouts with no training update (same prompt and settings as RL rollouts; no notes,
     no web), then every submitted edit scored on `dataset` against starting model `base`. Outputs in /runs/eval/<name>/.
     checkpoint: a Tinker state or sampler path (tinker://...), "" for the untrained editor (a fresh LoRA).
-    base: "original" (Qwen3.5-0.8B as downloaded) or a starting-model tag under /weights/bases/.
+    base: "original" (the target as downloaded) or a starting-model tag of that target (under /weights/bases/, or /weights/bases/<target>/).
+    target: a key of harness.target.TARGETS (default qwen3.5-0.8b).
     limit: score on the first `limit` problems only (tests). edits: skip the rollouts and score these run paths instead."""
     if dataset not in EVAL_SETS:
         raise SystemExit(f"dataset must be one of {sorted(EVAL_SETS)}")
+    if target not in TARGETS:
+        raise SystemExit(f"target must be one of {sorted(TARGETS)}")
     tag = "" if base == "original" else base
     print("evaluation set:", dataset, prep_eval_set.remote(dataset), "problems")
     if edits:
-        call = eval_score.spawn(name, edits, dataset, tag, limit, parallel)
+        call = eval_score.spawn(name, edits, dataset, tag, limit, parallel, target)
     else:
         call = rl_run.spawn(name, steps=1, group_size=n, forward_budget=forward_budget, rollout_minutes=rollout_minutes, hours=rollout_minutes / 60 + 0.5,
                             reward_items=reward_items, start_from=checkpoint, web=False, rollouts_per_gpu=rollouts_per_gpu, update_check=False,
-                            start_base=tag, mode="eval", eval_dataset=dataset, eval_limit=limit, eval_parallel=parallel)
+                            start_base=tag, mode="eval", eval_dataset=dataset, eval_limit=limit, eval_parallel=parallel, target=target)
     print("SPAWNED", call.object_id, "-> /runs/eval/" + name + "/summary.json")
 
 
 # ----------------------------------------------------------------------------- scoring a starting model
 @app.function(image=rl_image, volumes={"/runs": runs, "/heldout": heldout_vol}, timeout=4 * 3600)
-async def base_vs_original(base_tag: str, dataset: str = "math500", limit: int = 0):
+async def base_vs_original(base_tag: str, dataset: str = "math500", limit: int = 0, target: str = DEFAULT_TARGET):
     """A starting model (a rebase tag) against Qwen as downloaded on an evaluation set, paired by problem and sample.
     Both sides come from heldout_eval with no edit: each model's answers are cached per (model, dataset) and generated
     only when missing (with `limit`, the cache is used when complete and nothing is written to it).
     Writes /runs/eval/base-<tag>-<dataset>.json (with `limit`: ...-limit<k>.json)."""
     import asyncio, json, os
     from harness.target import paired_stats, summarize
-    name = f"base-{base_tag}-{dataset}" + (f"-limit{limit}" if limit else "")
+    name = ("" if target == DEFAULT_TARGET else f"{target}-") + f"base-{base_tag}-{dataset}" + (f"-limit{limit}" if limit else "")
     sides = {"base": base_tag, "original": ""}
     paths = {k: f"eval/{name}/_{k}" for k in sides}
     await runs.reload.aio()
@@ -1053,19 +1106,19 @@ async def base_vs_original(base_tag: str, dataset: str = "math500", limit: int =
 
     async def answers(k, tag):
         """From the cache when it covers the wanted problems (no GPU), else generated by heldout_eval."""
-        c = heldout_cache(tag, dataset)
+        c = heldout_cache(tag, dataset, target)
         if os.path.exists(c):
             rows = [r for r in map(json.loads, open(c)) if (r["qid"], r["sample"]) in want]
             if len(rows) == len(want):
                 return rows, True
-        await heldout_eval.remote.aio(paths[k], 2, limit, True, tag, dataset)
+        await heldout_eval.remote.aio(paths[k], 2, limit, True, tag, dataset, target)
         await runs.reload.aio()
         return [json.loads(l) for l in open(f"/runs/{paths[k]}/{sub}/original.jsonl")], False
 
     got = dict(zip(sides, await asyncio.gather(*[answers(k, t) for k, t in sides.items()])))
     rows = {k: v[0] for k, v in got.items()}
     pr = paired_stats(rows["original"], rows["base"])  # base minus original
-    out = {"base": base_tag, "dataset": dataset, "problems": limit or "all", "answers_per_problem": 2,
+    out = {"base": base_tag, "target": target, "dataset": dataset, "problems": limit or "all", "answers_per_problem": 2,
            "original": summarize(rows["original"], GEN_CAP), "base_model": summarize(rows["base"], GEN_CAP),
            "original_pct": None, "base_pct": None, "gain_pp": pr["diff_pp"], "se_pp": pr["se_pp"], "questions": pr["questions"],
            "wrong_to_right": pr["wrong_to_right"], "right_to_wrong": pr["right_to_wrong"],
@@ -1078,10 +1131,81 @@ async def base_vs_original(base_tag: str, dataset: str = "math500", limit: int =
 
 
 @app.local_entrypoint()
-def score_base(base: str, dataset: str = "math500", limit: int = 0):
-    """Score a starting model (a tag under /weights/bases/) against Qwen as downloaded on `dataset`, paired by problem."""
+def score_base(base: str, dataset: str = "math500", limit: int = 0, target: str = DEFAULT_TARGET):
+    """Score a starting model (a rebase tag) against the target as downloaded on `dataset`, paired by problem.
+    Output: /runs/eval/base-<tag>-<dataset>.json (another target: /runs/eval/<target>-base-<tag>-<dataset>.json)."""
     if dataset not in EVAL_SETS:
         raise SystemExit(f"dataset must be one of {sorted(EVAL_SETS)}")
+    if target not in TARGETS:
+        raise SystemExit(f"target must be one of {sorted(TARGETS)}")
     print("evaluation set:", dataset, prep_eval_set.remote(dataset), "problems")
-    call = base_vs_original.spawn(base, dataset, limit)
-    print("SPAWNED", call.object_id, f"-> /runs/eval/base-{base}-{dataset}" + (f"-limit{limit}" if limit else "") + ".json")
+    call = base_vs_original.spawn(base, dataset, limit, target)
+    name = ("" if target == DEFAULT_TARGET else f"{target}-") + f"base-{base}-{dataset}" + (f"-limit{limit}" if limit else "")
+    print("SPAWNED", call.object_id, f"-> /runs/eval/{name}.json")
+
+
+# ----------------------------------------------------------------------------- preparing another target
+@app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, timeout=90 * 60, memory=32768, cpu=8)
+def baseline_sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int = 1, cap: int = GEN_CAP):
+    """The target as downloaded on the first `n_problems` MATH training problems of the practice "extra" split (the same
+    problems for every target, never in the baseline or the select/confirm splits), with the forward tool's prompt, seeds
+    and sampling. Reports accuracy, the share cut at `cap`, and how often "Wait" appears in cut-off and finished answers.
+    Writes /runs/data/targets/<target>/sweep_math<k>_n<n>_cap<cap>.json and the answers as .jsonl."""
+    import json, os, re, time
+    P = target_paths(target)
+    pdir = P["practice"]
+    sp = json.load(open(f"{pdir}/splits.json"))
+    practice = {json.loads(l)["id"]: json.loads(l) for l in open(f"{pdir}/problems.jsonl")}
+    ids = [i for i in sp["extra"] if practice[i]["source"] == "math_train"][:n_problems]
+    items = [{"qid": i, "source": "math_train", "answer": practice[i]["answer"], "prompt": practice[i]["problem"] + "\n\nPut your final answer in \\boxed{}."} for i in ids]
+    t = time.time()
+    proc = start_vllm(target_dir(target), "original", 8001, 0.90, cap + 3000)
+    rows = _Core._gen(None, "original", 8001, items, n, cap)
+    stop_proc(proc)
+    waits = lambda rs: sum(len(re.findall(r"\bWait\b", r["text"])) for r in rs)
+    toks = lambda rs: max(1, sum(r["tokens"] for r in rs))
+    cut = [r for r in rows if r["finish"] == "length"]; done = [r for r in rows if r["finish"] != "length"]
+    out = {"target": target, "problems": len(ids), "samples_per_problem": n, "cap": cap, **summarize(rows, cap),
+           "accuracy_of_finished_pct": round(100 * sum(bool(r["correct"]) for r in done) / len(done), 2) if done else None,
+           "wait_per_1k_tokens": {"cut": round(1000 * waits(cut) / toks(cut), 2) if cut else None, "finished": round(1000 * waits(done) / toks(done), 2) if done else None},
+           "wait_per_answer": {"cut": round(waits(cut) / len(cut), 1) if cut else None, "finished": round(waits(done) / len(done), 1) if done else None},
+           "seconds": round(time.time() - t)}
+    f = f"{P['data']}/sweep_math{len(ids)}_n{n}_cap{cap}"
+    os.makedirs(P["data"], exist_ok=True)
+    json.dump(out, open(f + ".json", "w"), indent=1)
+    with open(f + ".jsonl", "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    runs.commit()
+    print("SWEEP", json.dumps(out))
+    return out
+
+
+@app.local_entrypoint()
+def sweep(target: str = DEFAULT_TARGET, n_problems: int = 200, n: int = 1, cap: int = GEN_CAP):
+    """Quick baseline of a target as downloaded: accuracy and hit-cap rate on MATH training problems (1 GPU).
+    Another target is downloaded first (prep, CPU only), so this can run before prep_target."""
+    if target not in TARGETS:
+        raise SystemExit(f"target must be one of {sorted(TARGETS)}")
+    if target != DEFAULT_TARGET:
+        prep.remote(target)
+    call = baseline_sweep.spawn(target, n_problems, n, cap)
+    print("SPAWNED", call.object_id, f"-> /runs/data/targets/{target}/sweep_math{n_problems}_n{n}_cap{cap}.json")
+
+
+@app.local_entrypoint()
+def prep_target(target: str, limit: int = 0):
+    """Everything a new target needs before rollouts, evaluate or rebasing, in that target's own folders:
+    download (prep), the practice files copied from the default target (same splits), then on 3 GPUs (gen_base with tag ""):
+    the baseline answers (512 generations) and SUMMARY.txt, the reward-set answers, the select split (part 0); the confirm
+    splits (part 1); MATH-500 and gsm8k_test (part 3). --limit k: a test on the first k problems of each list, written
+    under /runs/data/targets/<target>/_limit_test/ instead of the caches."""
+    if target not in TARGETS or target == DEFAULT_TARGET:
+        raise SystemExit(f"target must be one of {sorted(set(TARGETS) - {DEFAULT_TARGET})} (the default target is prepared by harness.target --step prep and the prep_* functions)")
+    print("arch", prep.remote(target))
+    print("evaluation sets", {ds: prep_eval_set.remote(ds) for ds in ("math500", "gsm8k_test")})
+    calls = {k: gen_base.spawn("", k, target=target, limit=limit) for k in (0, 1, 3)}
+    for k, c in calls.items():
+        print("part", k, c.object_id)
+    for k, c in calls.items():
+        print("part", k, "done", c.get())

@@ -120,6 +120,18 @@ uvx modal run --detach -m rl.loop::evaluate --name nolib1-s3-gsm8k --checkpoint 
 uvx modal run --detach -m rl.loop::score_base --base rebase2-k2 --dataset math500
 ```
 
+Another target model. The target is a key of `TARGETS` in `harness/target.py` (`qwen3.5-0.8b`, the default, or `qwen3.5-2b`). Its layer count, sizes, attention layout and tensor names are read from its config.json and weight files, and the editor's prompt and tool descriptions are built from them. Each target has its own practice folder, cached answers and starting models under `/runs/data/targets/<target>/` (the default target's files stay where they were).
+
+```bash
+# accuracy and hit-cap rate of the target as downloaded on 200 MATH train problems at the 8,192-token cap (1 GPU; downloads it first)
+uvx modal run --detach -m rl.loop::sweep --target qwen3.5-2b
+# download, practice files (same splits as the default target), baseline (512 answers + SUMMARY.txt), the select/confirm splits,
+# the reward set, MATH-500 and gsm8k_test: 3 GPUs; --limit 2 is a dry run that writes only to /runs/data/targets/<target>/_limit_test/
+uvx modal run --detach -m rl.loop::prep_target --target qwen3.5-2b
+# then --target on rl, evaluate, rebase and score_base, e.g.
+uvx modal run --detach -m rl.loop::evaluate --target qwen3.5-2b --name 2b-untrained-math500 --checkpoint "" --base original --n 8 --dataset math500
+```
+
 `evaluate --edits rl/<exp>/work/<rid>,...` scores existing edits without new rollouts. Tested end to end at small scale on 14 November 2026: one rollout from `nolib1-step2` with a 6-minute cap submitted an edit (reward-set gain +34.0) that was then scored on 5 GSM8K test problems.
 
 Measured cost of one full-length search: about 100 minutes on one L40S (about $3) plus under $1 of Tinker.
