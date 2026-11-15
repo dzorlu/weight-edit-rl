@@ -1,6 +1,6 @@
 # hero3: step 1 vs step 2 vs Opus 5.5 (snapshot 2026-11-14)
 
-Update, 19:10: all 8 step 2 rollouts finished; mean reward +24.3 (s1-r5: +27.3). Step 1 test scores for r6 and r7: +2.5 and +29.4. The text below was written with 7 of 8 step 2 rollouts finished.
+Update, 17:55: all 8 step 2 rollouts finished; mean reward +24.3 (s1-r5: +27.3). Step 1 test scores for r6 and r7: +2.5 and +29.4. The text below was written with 7 of 8 step 2 rollouts finished.
 
 Sources: `hero3-s0-r*.jsonl` (step 1), `hero3-s1-r*.jsonl` (step 2), `steps.jsonl`, `config.json`, `results/searches/opus-5.5/`. Numbers come from `analyze_steps.py` in this folder (`python3 analyze_steps.py --detail`). Edit form, direction and strength were annotated by hand from each FINAL SUBMISSION text. Rewards are in points (reward × 100).
 
