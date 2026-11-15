@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**`hero3` step 2 scored on the test set** (19:30). MATH-500 gains of its 8 edits: +31.4, +22.0, +13.4, +24.2, +22.4, +28.3, +24.2, +28.1; mean +24.3, the same as the step's mean reward (+24.3). Step 1's mean test was +15.5.
+
 **The publish loop commits the run page and trajectories to the site's main** before each publish. Two sessions publish the site (one for the blog post, one for the runs), and a publish from a checkout without the latest run page replaced it with an old one.
 
 **One page per run.** `/run/` links to each run. A run's page has one table per step (step 1, step 2, ...), one row per rollout and a mean row: reward, test, edited accuracy, hit cap, tensors edited, turns, minutes, forward passes, Python calls, how it ended. `nolib1`'s page starts with step 1, shared with `hero3`. The trajectory viewer numbers `nolib1`'s steps the same way.
