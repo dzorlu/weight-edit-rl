@@ -11,12 +11,13 @@ RUNS = [
     dict(key="inkling-2", group="Searches on Qwen3.5-0.8B", dir="searches/inkling-2-small-2", editor="Inkling 2 Small, second search", prompt="methods", note="Same prompt as the first Inkling search. It found a different edit: 11 'Wait' columns zeroed and 8 end-of-thinking columns doubled."),
 ]
 import glob, re
+STEP_OFFSET = {"nolib1": 1}  # nolib1 branched from hero3 after step 1, so its first step is step 2
 for exp in sorted(os.path.basename(p) for p in glob.glob(os.path.join("results", "rl", "*")) if os.path.exists(os.path.join(p, "config.json"))):  # RL runs: one entry per rollout
     cfg = os.path.join("results", "rl", exp, "config.json")
     for f in sorted(glob.glob(os.path.join("results", "rl", exp, f"{exp}-s*-r*.jsonl"))):
         st, ro = re.search(r"-s(\d+)-r(\d+)\.jsonl$", f).groups()
-        RUNS.append(dict(key=f"rl-{exp}-s{st}-r{ro}", group=f"RL run {exp} (Inkling 2 Small)", transcript=f, config=cfg,
-                         editor=f"RL step {int(st) + 1}, rollout {int(ro) + 1}", budget=json.load(open(cfg)).get("forward_budget", 32),
+        RUNS.append(dict(key=f"rl-{exp}-s{st}-r{ro}", group=f"RL run {exp} (Inkling 2 Small{', no notes, branched from hero3 after step 1' if exp == 'nolib1' else ', with notes' if exp == 'hero3' else ''})", transcript=f, config=cfg,
+                         editor=f"RL step {int(st) + 1 + STEP_OFFSET.get(exp, 0)}, rollout {int(ro) + 1}", budget=json.load(open(cfg)).get("forward_budget", 32),
                          note="A rollout from an RL run. Step 1 uses the untrained Inkling; later steps use the checkpoint after each update. The reward is the accuracy gain on hidden answers."))
 import ast
 

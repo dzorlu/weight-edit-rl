@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 14 November 2026
 
+**The live run page shows both runs.** `hero3` (steps 1 and 2, with notes) and `nolib1` (branched after step 1, so its first step is numbered step 2) in one step table, with each step's mean test score when available. The trajectory viewer numbers `nolib1`'s steps the same way.
+
 **`hero3` stopped after step 2** (17:54). Step 1 mean reward +13.6, step 2 +24.3; entropy 0.44 → 0.27. Step 1's edits on the test set: +0.6, +11.1, +16.7, +15.2, +32.8, no edit, +2.5, +29.4, in line with their rewards. Step 2's edits are being scored on the test set. The step-2 checkpoint is kept (`hero3-step2`). The live page and the repo now follow `nolib1`.
 
 **A second arm without the library: `nolib1`** (17:48). Starts from `hero3`'s step-1 checkpoint, same prompt and settings, but no web tools and no `/library`. Resumed from the state checkpoint `tinker://2ca0a9ef-7226-5b53-a9d0-673f54ba489d:train:0/weights/hero3-step1`, the first training update. In `hero3`, step 2's rollouts read step 1's notes, including the best rollout's full recipe, so step 2's gain mixes the training update with copying. `nolib1`'s first step measures the update alone; `hero3` continues as the arm with the library.

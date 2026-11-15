@@ -1,20 +1,26 @@
-"""Write a live status page for one RL run from its step record and rollout logs.
+"""Write the live status page for the RL runs: a combined step table across runs, then each run's latest step.
 
-    python3 viewer/run_status.py hero3 out.html
+    python3 viewer/run_status.py out.html hero3 nolib1:hero3@1
+An argument `name:parent@k` marks a run branched from `parent` after its step k: its first step is shown as step k + 1.
 """
 import glob, html, json, os, sys, time
 
-exp, out = sys.argv[1], sys.argv[2]
-d = os.path.join("results", "rl", exp)
-cfg = json.load(open(os.path.join(d, "config.json")))
-steps = [json.loads(l) for l in open(os.path.join(d, "steps.jsonl"))] if os.path.exists(os.path.join(d, "steps.jsonl")) else []
-base = next((s for s in steps if s.get("event") == "reward_base"), None)
-done_steps = [s for s in steps if s.get("event") == "step"]
+out, specs = sys.argv[1], sys.argv[2:]
 e = lambda x: html.escape(str(x))
 sgn = lambda v: "" if v is None else f"{v * 100:+.1f}"
+NOTES = {"hero3": "with the shared notes library and web tools",
+         "nolib1": "no notes library, no web tools"}
 
 
-def rollout_rows(step):
+def load(exp):
+    d = os.path.join("results", "rl", exp)
+    cfg = json.load(open(os.path.join(d, "config.json")))
+    steps = [json.loads(l) for l in open(os.path.join(d, "steps.jsonl"))] if os.path.exists(os.path.join(d, "steps.jsonl")) else []
+    test = json.load(open(os.path.join(d, "test.json"))) if os.path.exists(os.path.join(d, "test.json")) else {}
+    return d, cfg, steps, test
+
+
+def rollout_rows(d, exp, step):
     rows = []
     for f in sorted(glob.glob(os.path.join(d, f"{exp}-s{step}-r*.jsonl")), key=lambda p: int(p.rsplit("-r", 1)[1].split(".")[0])):
         recs = [json.loads(l) for l in open(f)]
@@ -23,8 +29,7 @@ def rollout_rows(step):
         for r in t:
             if r["tool"] == "forward" and not r["result"].startswith("["):
                 try:
-                    p = json.loads(r["result"]).get("paired_edited_minus_original")
-                    n = json.loads(r["result"])["original"]["n"]
+                    j = json.loads(r["result"]); p = j.get("paired_edited_minus_original"); n = j["original"]["n"]
                     if p and n >= 64 and (best is None or p["diff_pp"] > best[0]):
                         best = (p["diff_pp"], p["se_pp"], n)
                 except Exception:
@@ -32,42 +37,72 @@ def rollout_rows(step):
         rid = os.path.basename(f)[:-6]
         rows.append(dict(rid=rid, n=int(rid.rsplit("-r", 1)[1]) + 1, turns=len(m), minutes=round(m[-1]["t"] / 60) if m else 0,
                          fwd=t[-1]["used_f"] if t else 0, web=sum(r["tool"] in ("web_search", "web_read") for r in t),
-                         restarts=max([r.get("target_restarts", 0) for r in t] or [0]), best=best,
-                         done=s[0]["summary"] if s else None))
+                         restarts=max([r.get("target_restarts", 0) for r in t] or [0]), best=best, done=s[0]["summary"] if s else None))
     return rows
 
 
-cur = len(done_steps)
-parts = [f"<h1>Live RL run: {e(exp)}</h1>",
-         f"<div class='meta'>Updated {time.strftime('%H:%M %Z, %d %b %Y')}. Inkling 2 Small learns to edit Qwen3.5-0.8B; the reward is the accuracy gain of its submitted edit on the reward set. "
-         f"<a href='../'>map of the edits</a> · <a href='../traces/'>trajectories</a> · <a href='../changelog/'>changelog</a> · <a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(exp)}'>raw logs</a></div>",
-         f"<p>Settings: {cfg['steps']} steps of {cfg['group_size']} rollouts, {cfg['forward_budget']} forward passes and {cfg['rollout_minutes']} minutes per rollout, "
-         f"reward on {cfg['reward_items']} problems × {cfg.get('reward_n', 2)} samples, web search {'on' if cfg.get('web') else 'off'}. "
-         + (f"Original weights on the reward set: {base['accuracy'] * 100:.1f}% correct, {base['hit_cap'] * 100:.0f}% hit the token cap." if base else "") + "</p>",
-         "<h2>Steps</h2>"]
-if done_steps:
-    parts.append("<div class='tw'><table><tr><th>Step</th><th>Mean reward</th><th>Best</th><th>Rewards</th><th>KL sampler–trainer</th><th>Entropy</th><th>Minutes</th></tr>")
-    for s in done_steps:
+runs = []
+for spec in specs:
+    name, _, parent = spec.partition(":")
+    par, _, k = parent.partition("@")
+    d, cfg, steps, test = load(name)
+    runs.append(dict(name=name, parent=par or None, offset=int(k or 0), d=d, cfg=cfg, test=test,
+                     done=[s for s in steps if s.get("event") == "step"], ended=any(s.get("event") in ("done", "stopped") for s in steps)))
+
+cfg0 = runs[0]["cfg"]
+parts = ["<h1>Live RL runs</h1>",
+         f"<div class='meta'>Updated {time.strftime('%H:%M %Z, %d %b %Y')}. Inkling 2 Small learns to edit Qwen3.5-0.8B. "
+         "<a href='../'>map of the edits</a> · <a href='../traces/'>trajectories</a> · <a href='../changelog/'>changelog</a></div>",
+         f"<p>Each step: {cfg0['group_size']} rollouts from the current checkpoint, {cfg0['forward_budget']} forward passes and {cfg0['rollout_minutes']} minutes each, "
+         "then one training update. Reward: accuracy of the submitted edit minus the original weights' 7.4%, on 256 hidden answers (the reward set), in points. "
+         "Test: the same edit on MATH-500 (original 6.6%), which training never uses.</p>"]
+
+# the runs and how they relate
+parts.append("<h2>Runs</h2><ul>")
+for r in runs:
+    rel = f"branched from {e(r['parent'])} after step {r['offset']}, so its first step is step {r['offset'] + 1}" if r["parent"] else "starts from the untrained model"
+    state = "stopped" if (r["ended"] or r["name"] == "hero3") else "running"
+    parts.append(f"<li><b>{e(r['name'])}</b>: {NOTES.get(r['name'], '')}; {rel}; {state}. "
+                 f"<a href='https://github.com/dzorlu/weight-edit-rl/tree/main/results/rl/{e(r['name'])}'>logs</a></li>")
+parts.append("</ul>")
+
+# combined step table
+parts.append("<h2>Steps</h2><div class='tw'><table><tr><th>Step</th><th>Run</th><th>Mean reward</th><th>Rewards</th><th>Mean test</th><th>Entropy</th><th>Minutes</th></tr>")
+rows = []
+for r in runs:
+    for s in r["done"]:
+        n = s["step"] + 1 + r["offset"]
+        rids = [x["rid"] for x in s.get("rollouts", [])]
+        tests = [r["test"][i]["paired"]["diff_pp"] for i in rids if i in r["test"] and r["test"][i].get("paired")]
+        mt = f"{sum(tests) / len(tests):+.1f} ({len(tests)} edits)" if tests else "pending"
         rw = s.get("rewards") or []
-        parts.append(f"<tr><td>{s['step'] + 1}</td><td>{sgn(s.get('mean_reward'))}</td><td>{sgn(max(rw)) if rw else ''}</td><td>{', '.join(sgn(r) for r in rw)}</td>"
-                     f"<td>{e(s.get('kl_sample_train_v1', '–'))}</td><td>{e(s.get('entropy', '–'))}</td><td>{e(s.get('rollout_minutes'))}</td></tr>")
-    parts.append("</table></div><p class='meta'>Rewards are in points: accuracy with the edit minus accuracy of the original weights, on 256 paired answers.</p>")
-else:
-    parts.append("<p>No step has finished yet.</p>")
-if cur < cfg["steps"]:
-    rows = rollout_rows(cur)
-    parts.append(f"<h2>Step {cur + 1}, in progress</h2>")
-    if rows:
-        parts.append("<div class='tw'><table><tr><th>Rollout</th><th>Turns</th><th>Minutes</th><th>Forward passes</th><th>Web calls</th><th>Best paired test so far</th><th>State</th></tr>")
-        for r in rows:
-            best = f"{r['best'][0]:+.1f} ± {r['best'][1]}, {r['best'][2]} answers per side" if r["best"] else "–"
-            st = f"done: reward {sgn(r['done']['reward'])}, {e(r['done']['ended'])}" if r["done"] else "running"
-            if r["restarts"]:
-                st += f", target restarted {r['restarts']}×"
-            parts.append(f"<tr><td><a href='../traces/#rl-{e(r['rid'])}'>{r['n']}</a></td><td>{r['turns']}</td><td>{r['minutes']}</td><td>{r['fwd']} / {cfg['forward_budget']}</td><td>{r['web']}</td><td>{best}</td><td>{st}</td></tr>")
-        parts.append("</table></div><p class='meta'>A paired test runs the original and the edited weights on the same problems. Tests on fewer than 64 answers are not shown.</p>")
-    else:
-        parts.append("<p>Rollouts are starting.</p>")
+        rows.append((n, r["name"], f"<tr><td>{n}</td><td>{e(r['name'])}</td><td>{sgn(s.get('mean_reward'))}</td><td>{', '.join(sgn(x) for x in rw)}</td>"
+                                   f"<td>{mt}</td><td>{e(s.get('entropy', '–'))}</td><td>{e(s.get('rollout_minutes'))}</td></tr>"))
+    cur = len(r["done"])
+    if not (r["ended"] or r["name"] == "hero3") and cur < r["cfg"]["steps"]:
+        rows.append((cur + 1 + r["offset"], r["name"], f"<tr><td>{cur + 1 + r['offset']}</td><td>{e(r['name'])}</td><td colspan='5'>in progress</td></tr>"))
+for _, _, h in sorted(rows, key=lambda x: (x[0], x[1])):
+    parts.append(h)
+parts.append("</table></div>")
+
+# in-progress step of each running run
+for r in runs:
+    cur = len(r["done"])
+    if r["ended"] or r["name"] == "hero3" or cur >= r["cfg"]["steps"]:
+        continue
+    rr = rollout_rows(r["d"], r["name"], cur)
+    parts.append(f"<h2>{e(r['name'])}, step {cur + 1 + r['offset']}, in progress</h2>")
+    if not rr:
+        parts.append("<p>Rollouts are starting.</p>"); continue
+    parts.append("<div class='tw'><table><tr><th>Rollout</th><th>Turns</th><th>Minutes</th><th>Forward passes</th><th>Best paired test so far</th><th>State</th></tr>")
+    for x in rr:
+        best = f"{x['best'][0]:+.1f} ± {x['best'][1]}, {x['best'][2]} answers per side" if x["best"] else "–"
+        st = f"done: reward {sgn(x['done']['reward'])}, {e(x['done']['ended'])}" if x["done"] else "running"
+        if x["restarts"]:
+            st += f", target restarted {x['restarts']}×"
+        parts.append(f"<tr><td><a href='../traces/#rl-{e(x['rid'])}'>{x['n']}</a></td><td>{x['turns']}</td><td>{x['minutes']}</td>"
+                     f"<td>{x['fwd']} / {r['cfg']['forward_budget']}</td><td>{best}</td><td>{st}</td></tr>")
+    parts.append("</table></div><p class='meta'>A paired test runs the original and the edited weights on the same train problems. Tests on fewer than 64 answers are not shown.</p>")
 
 style = """:root { --ink:#1d1d1b; --muted:#5f5e5a; --line:#e4e3df; --bg:#fcfcfb; --th:#f0efec; --accent:#2a78d6; }
 html.dark { --ink:#e8e6e1; --muted:#9c9a92; --line:#2c2c2a; --bg:#151514; --th:#242422; --accent:#7fb2f0; color-scheme:dark; }
@@ -84,7 +119,7 @@ theme = """<script>(function () { try { let v = localStorage.getItem('quarto-col
 if (v == null && window.matchMedia('(prefers-color-scheme: dark)').matches) v = 'alternate';
 if (v === 'alternate') document.documentElement.classList.add('dark'); } catch (e) {} })();</script>"""
 page = (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='600'><title>Live RL run</title><style>{style}</style>{theme}</head><body>"
+        f"<meta http-equiv='refresh' content='600'><title>Live RL runs</title><style>{style}</style>{theme}</head><body>"
         f"<header class='topbar'><a class='brand' href='../../../'>Tinkerings</a></header><main>{''.join(parts)}</main></body></html>\n")
 open(out, "w").write(page)
 print("wrote", out)
