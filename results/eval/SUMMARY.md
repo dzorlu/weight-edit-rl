@@ -11,11 +11,10 @@ Untrained editor (a fresh LoRA on Inkling 2 Small, no RL) vs trained editor (aft
 |---|---|---|---|---|---|
 | Qwen3.5-0.8B, MATH-500 (original 6.6%) | 4, 90-min cap | +17.1, 0*, +13.8, +16.2 | +11.8 / 23.7% | +18.2, +4.9, +13.5, +18.9 | +13.9 / 24.8% |
 | Qwen3.5-2B, MATH-500, 250 problems (original 38.0%) | 2, 60-min cap | +26.2, +12.4 | +19.3 / 64.2% | 0 (no edit), +15.6 | +7.8 / 53.6% |
-| Qwen3.5-0.8B, NuminaMath cn_k12 held-out, 250 problems (original 8.2%) | 2, 60-min cap | +17.8, +14.4 | +16.1 / 26.0% | 0 (no edit), −1.2 | −0.6 / 7.0% |
 
 \* this session's edit scored +19.1 on the reward set, but it ended at the time limit and its edit files were not saved, so the held-out score is 0 (a harness bug, counted as 0).
 
-Reading: no RL benefit is shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B and on the new dataset the untrained editor did better, with 2 sessions each. The trained editor's NuminaMath sessions tested a `</think>` amplification at strength 1.0 (it worked on MATH at 6) and ran out of the 60-minute budget after 4 to 6 forward passes.
+Reading: no RL benefit is shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B the untrained editor did better, with 2 sessions each.
 
 Earlier edits from the training runs, scored on GSM8K test (Qwen3.5-0.8B, original 12.5%; 8 edits each): untrained step 1 mean +20.1 (best +47.3); step 4 (editor after near-zero updates) mean +31.4 (best +46.0).
 

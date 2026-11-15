@@ -26,7 +26,7 @@ Qwen3.5-0.8B fails at math in one way: it writes "Wait..." and rechecks until it
 Full tables: [`results/eval/SUMMARY.md`](results/eval/SUMMARY.md). Held-out sets only; small samples (2 to 4 editing sessions per editor), so a proof of concept.
 
 - **The edited model gets much better, and it transfers.** Qwen3.5-0.8B with the editor's best edits stacked: MATH-500 6.6% → 42.5%, GSM8K test 12% → 58%, NuminaMath (new dataset) 8.2% → 44.6%. Nearly every change is wrong→right.
-- **RL has not yet made the editor better.** Untrained vs trained editor on the same model: 0.8B MATH-500 +11.8 vs +13.9 (mean gain per edit); Qwen3.5-2B +19.3 vs +7.8; NuminaMath +16.1 vs −0.6. The RL updates did move the editor toward its higher-reward sessions (correlation 0.86 to 0.97 between each session's change in likelihood and its advantage), but after a handful of updates that does not show on held-out data.
+- **RL has not yet made the editor better.** Untrained vs trained editor on the same model: 0.8B MATH-500 +11.8 vs +13.9 (mean gain per edit); Qwen3.5-2B +19.3 vs +7.8. The RL updates did move the editor toward its higher-reward sessions (correlation 0.86 to 0.97 between each session's change in likelihood and its advantage), but after a handful of updates that does not show on held-out data.
 - **One edit is most of the gain.** The best single edit from the untrained editor already reaches 39.4% on MATH-500 and 59.8% on GSM8K test.
 
 ## How it works
