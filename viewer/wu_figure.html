@@ -8,21 +8,22 @@
     <div class="wu-block"><div class="wu-cap"><code>x * W</code> [4 × 3]</div><div class="wu-tok"></div><div class="wu-grid" id="wu-XW"></div><div class="wu-note">Row j: what unit j writes.</div></div>
     <div class="wu-op">@</div>
     <div class="wu-block"><div class="wu-cap"><code>U</code> [3 × 3]</div><div class="wu-tok" id="wu-Uh"></div><div class="wu-grid" id="wu-U"></div><div class="wu-note">One column per token.</div></div>
-  </div>
-  <div class="wu-down">↓ =</div>
-  <div class="wu-block">
-    <div class="wu-cap">contribution [4 units × 3 tokens]: unit j's part of each token's logit</div>
-    <div class="wu-tok wu-ind" id="wu-Ch"></div>
-    <div class="wu-withlab"><div class="wu-lab" id="wu-rl"></div><div class="wu-grid" id="wu-C"></div></div>
-    <div class="wu-withlab"><div class="wu-lab wu-sl">column sum</div><div class="wu-grid wu-sumrow" id="wu-L"></div></div>
+    <div class="wu-op">=</div>
+    <div class="wu-block">
+      <div class="wu-cap">contribution [4 units × 3 tokens]</div>
+      <div class="wu-tok wu-ind" id="wu-Ch"></div>
+      <div class="wu-withlab"><div class="wu-lab" id="wu-rl"></div><div class="wu-grid" id="wu-C"></div></div>
+      <div class="wu-withlab"><div class="wu-lab wu-sl">column sum</div><div class="wu-grid wu-sumrow" id="wu-L"></div></div>
+    </div>
   </div>
   <div class="wu-total" id="wu-total"></div>
   <div class="wu-read" id="wu-read" aria-live="polite">Hover or tap a cell.</div>
 </div>
 <noscript><p>The figure needs JavaScript. x = [1, 2, 1.5, 0.5]; W rows [0.5, 0, 1], [−1, 0.5, 0], [2, 1, 0.5], [0, −1, 1]; U columns Wait [1, 0.5, 0], &lt;/think&gt; [0, 1, 0], So [−1, 0, 0.5]. Each unit's part of the "Wait" logit: 0.5, −1.5, 3.75, −0.25; the layer's part 2.5.</p></noscript>
 <style>
-.wu{margin:16px 0 8px;padding:12px;border:1px solid var(--line);border-radius:8px;overflow-x:auto}
-.wu-row{display:flex;align-items:flex-start;gap:6px;min-width:620px}
+.dfig:has(> .wu){overflow:visible}
+.wu{margin:16px 0 8px;padding:12px;border:1px solid var(--line);border-radius:8px;overflow-x:auto;box-sizing:border-box;position:relative;width:min(1100px,calc(100vw - 32px));left:50%;transform:translateX(-50%);background:var(--bg)}
+.wu-row{display:flex;align-items:flex-start;gap:6px;min-width:960px;justify-content:center}
 .wu-block{display:flex;flex-direction:column;gap:4px}
 .wu-cap{font-size:12.5px;color:var(--muted);min-height:20px;white-space:nowrap}
 .wu-tok{display:grid;grid-template-columns:repeat(3,50px);gap:3px;font-size:10.5px;color:var(--muted);text-align:center;height:14px;white-space:nowrap}
@@ -42,7 +43,6 @@
 .wu .c.dim{opacity:.3}
 .wu .c.hi,.wu .c:focus-visible{box-shadow:0 0 0 2px var(--accent)}
 .wu-op{align-self:flex-start;margin-top:96px;min-width:16px;text-align:center;font:600 18px ui-monospace,Menlo,monospace;color:var(--ink)}
-.wu-down{font:600 16px ui-monospace,Menlo,monospace;color:var(--ink);margin:10px 0 6px 380px}
 .wu-total{margin-top:12px;font-size:14px}
 .wu-read{margin-top:6px;font-size:14px;color:var(--muted);min-height:1.5em}
 </style>
