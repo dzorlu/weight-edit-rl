@@ -26,8 +26,8 @@ Qwen3.5-0.8B as downloaded vs the child models (Qwen with the best edits from ea
 |---|---|---|---|---|
 | MATH-500 (1,000 answers) | 6.6% | 39.4% | 42.5% | 42.5% |
 | GSM8K test (1,000 answers) | 12.1–12.5% | 59.8% | 53.8% | 58.0% |
-| NuminaMath cn_k12 (500 answers) | 8.2% | | 44.6% | 41.4% |
+| NuminaMath cn_k12 (500 answers) | 8.2% | 39.2% | 44.6% | 41.4% |
 
-Children vs original: almost all changes are wrong→right (MATH-500 360 vs 1; GSM8K 464 vs 5; NuminaMath 188 vs 6). The child models were built from edits chosen on MATH training problems; GSM8K test and NuminaMath were never used. The child's gain comes mostly from the editing method plus picking the best edit of each step; against the best single edit with no RL it is +3 points on MATH-500 and −2 on GSM8K.
+Children vs original: almost all changes are wrong→right (MATH-500 360 vs 1; GSM8K 464 vs 5; NuminaMath 188 vs 6). The child models were built from edits chosen on MATH training problems; GSM8K test and NuminaMath were never used. The child's gain comes mostly from the editing method plus picking the best edit of each step; against the best single edit with no RL it is +3 points on MATH-500, −2 on GSM8K and +2 to +5 on NuminaMath.
 
 Raw outputs: `/eval/<name>/summary.json` and `scores.json` on the `glimmer-runs` Modal volume.
