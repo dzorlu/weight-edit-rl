@@ -152,6 +152,44 @@ def forward_request(args):
     return json.dumps(req)
 
 
+def test_too_big(body, cap):
+    """Reason to refuse a generation request with more than `cap` answers per model (cap 0: no limit), else ""."""
+    import json
+    if not cap:
+        return ""
+    try:
+        req = json.loads(body)
+    except Exception:
+        return ""
+    if not isinstance(req, dict) or req.get("type") != "generate":
+        return ""
+    n_items = len(req.get("problems") or []) + len(req.get("prompts") or [])
+    try:
+        n = int(req.get("n", 1))
+    except Exception:
+        n = 1
+    if n_items * n > cap:
+        return (f"this test asks for {n_items * n} answers per model ({n_items} problems x n={n}); the limit is {cap} answers per model. "
+                f"Use fewer problems (e.g. half of a split with \"n\": 1, or a quarter with \"n\": 2).")
+    return ""
+
+
+def cap_tests(prompt, cap):
+    """Rewrite the prompt's statements about test sizes for a limit of `cap` answers per model."""
+    if not cap:
+        return prompt
+    old = 'A generation with "model": "both" takes at most 256 answers per model; with one model at most 512. One split with "n": 1 is 256 answers; half a split with "n": 2 is 256 answers.'
+    new = (f'A generation takes at most {cap} answers per model (with "model": "both", {cap} from each). Half a split with "n": 1 is {cap} answers; '
+           f'a quarter of a split with "n": 2 is {cap} answers. To confirm a final edit on more answers, run several such tests on different parts of confirm_1 and confirm_2.')
+    assert old in prompt, "test-size sentence not found in the prompt"
+    prompt = prompt.replace(old, new)
+    for a, b in (("the model answers up to 512 generations (problems x samples)", f"the model answers up to {cap} generations (problems x samples) per model"),
+                 ('(items x n <= 512; with "both" <= 256 per model)', f"(items x n <= {cap} per model)"),
+                 ('on at least 256 generations.', f"on up to {cap} generations per model, repeated on another part of the split when a difference needs confirming.")):
+        prompt = prompt.replace(a, b)
+    return prompt
+
+
 def _lenient_json(js, tries=6):
     """Parse a JSON object that may be followed by other text and may lack up to `tries` closing brackets,
     braces or quotes (Inkling sometimes writes `}],` where `}]],` is meant). Returns the object or None."""
@@ -623,7 +661,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                  reward_items: int = 128, reward_n: int = 2, effort: float = 0.9, lr: float = 2e-5, max_turns: int = 400, start_from: str = "", web: bool = False, library: str = "",
                  rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "",
                  mode: str = "rl", eval_dataset: str = "math500", eval_limit: int = 0, eval_parallel: int = 4,
-                 advantage: str = "grpo", adv_scale: float = 0.10, target: str = DEFAULT_TARGET, task: str = "math"):
+                 advantage: str = "grpo", adv_scale: float = 0.10, target: str = DEFAULT_TARGET, task: str = "math",
+                 max_test_answers: int = 0, step_offset: int = 0):
     """target: a key of harness.target.TARGETS; the prompt, tools, caches and starting models are that target's.
     task: a key of harness.target.TASKS; the practice folder, reward set and prompt wording are that task's.
     start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
@@ -648,8 +687,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         steps, rebase_every = 1, 0
     root = "eval" if evaluating else "rl"
     d = f"/runs/{root}/{exp}"
-    if os.path.exists(f"{d}/steps.jsonl"):
-        raise RuntimeError(f"{d} already has a run; a restart would train on top of it. Use a new --exp.")
+    if os.path.exists(f"{d}/steps.jsonl") and not step_offset:
+        raise RuntimeError(f"{d} already has a run; a restart would train on top of it. Use a new --exp, or --step-offset to continue it.")
     os.makedirs(d, exist_ok=True)
     T0 = time.time()
     run_deadline = T0 + hours * 3600
@@ -673,7 +712,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
     bm = f"{pdir_of('')}/baseline/meta.json"
     known = json.load(open(bm)) if os.path.exists(bm) else None
     n_practice = sum(1 for _ in open(f"{pdir_of('')}/problems.jsonl"))
-    prompt_text = editor_prompt(forward_budget, web, known, arch=arch, task=task, n_practice=n_practice)
+    prompt_text = cap_tests(editor_prompt(forward_budget, web, known, arch=arch, task=task, n_practice=n_practice), max_test_answers)
     tools = tools_for(arch) + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
     lib_dir = f"{d}/_library" if evaluating else f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
     os.makedirs(lib_dir, exist_ok=True)
@@ -698,7 +737,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "advantage": advantage, "adv_scale": adv_scale, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
                "rebase_every": rebase_every, "start_base": start_base, "update_check": update_check, "start_from": start_from,
                "baseline_given": bool(known), "mode": mode, "eval_dataset": eval_dataset if evaluating else None, "eval_limit": eval_limit,
-               "prompt": prompt_text}, open(f"{d}/config.json", "w"), indent=1)
+               "max_test_answers": max_test_answers, "step_offset": step_offset,
+               "prompt": prompt_text}, open(f"{d}/config.json" if not step_offset else f"{d}/config_from_step{step_offset + 1}.json", "w"), indent=1)
 
     def slog(rec):
         with open(f"{d}/steps.jsonl", "a") as f:
@@ -726,7 +766,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         ok = {(r["qid"], r["sample"]): r["correct"] for r in rows}
         ap_file = f"{TP['bases_r']}/{tag}/applied_edits.json" if tag else ""
         applied = json.load(open(ap_file)) if ap_file and os.path.exists(ap_file) else None
-        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice, applied=applied),
+        B = {"tag": tag, "prompt": cap_tests(editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice, applied=applied), max_test_answers),
              "ok": ok, "acc": sum(ok.values()) / len(ok)}
         slog({"event": "reward_base", "base": tag, "answers": len(ok), "accuracy": round(B["acc"], 4),
               "hit_cap": round(sum(r["finish"] == "length" for r in rows) / len(rows), 4), "seconds": round(time.time() - t)})
@@ -834,8 +874,11 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                         res = await call("py", body)
                 elif kind == "forward":
                     body = forward_request(args)
+                    too_big = test_too_big(body, max_test_answers)
                     if must_finish():
                         res = "[no forward passes left]"
+                    elif too_big:
+                        res = "[request failed; it does not count against the budget]\n" + too_big
                     else:
                         ok, res = await call("forward", body)
                         if ok:
@@ -947,7 +990,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             futs = [sc.compute_logprobs(tinker.ModelInput.from_ints(b["tokens"] + [b["target"][-1]])) for b in batch]
             return [torch.tensor([x if x is not None else float("nan") for x in f.result()[1:]]) for f in futs]
         new = await asyncio.to_thread(score, new_sampler)
-        ref = await asyncio.to_thread(score, sampler0) if (sampler0 is not None and step > 0) else None
+        ref = await asyncio.to_thread(score, sampler0) if (sampler0 is not None and step > 0 and not step_offset) else None  # a continued run has no step-0 sampler
         lo, ln, adv_all, per = [], [], [], {}
         for i, b in enumerate(batch):
             m = b["mask"] > 0
@@ -970,7 +1013,12 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
             out.update(kl_old_step0_k1=round(float((-d0).mean()), 6), kl_old_step0_k3=round(float((d0.exp() - 1 - d0).mean()), 6))
         return out
 
-    for step in range(steps):
+    if step_offset:  # continuing a run: rollouts since the last starting-model update count for the next one
+        for l in open(f"{d}/steps.jsonl"):
+            r = json.loads(l)
+            if r.get("event") == "step" and r["step"] < step_offset and (not rebase_every or r["step"] >= step_offset - step_offset % rebase_every):
+                recent += [(r["step"], info) for info in r.get("rollouts", []) if info.get("ok")]
+    for step in range(step_offset, step_offset + steps):
         if time.time() > run_deadline - 20 * 60:
             slog({"event": "stopped", "reason": "run time limit", "step": step}); break
         t = time.time()
@@ -1049,7 +1097,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 rec["update_check"] = {"error": repr(e)[:500]}
         slog(rec)
         # A new starting model: the best-rewarded edit of the last `rebase_every` steps, applied to the current one.
-        if rebase_every and (step + 1) % rebase_every == 0 and step + 1 < steps:
+        if rebase_every and (step + 1) % rebase_every == 0 and step + 1 < step_offset + steps:
             cands = [(info["reward"], s, info) for s, info in recent if info.get("edited_tensors") and info["reward"] > 0]
             recent = []
             if not cands:
@@ -1078,13 +1126,14 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
 def rl(exp: str, steps: int = 2, group_size: int = 4, forward_budget: int = 32, rollout_minutes: int = 120, hours: float = 10.0,
        reward_items: int = 128, effort: float = 0.9, lr: float = 2e-5, start_from: str = "", web: bool = False, library: str = "", rollouts_per_gpu: int = 1,
        rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "", advantage: str = "grpo", adv_scale: float = 0.10,
-       target: str = DEFAULT_TARGET, task: str = "math"):
+       target: str = DEFAULT_TARGET, task: str = "math", max_test_answers: int = 0, step_offset: int = 0):
     """advantage: "grpo" = (reward - group mean) / group spread; "mean" = (reward - group mean) / adv_scale (Dr. GRPO).
     target: a key of harness.target.TARGETS (run prep_target for it first)."""
     if target not in TARGETS:
         raise SystemExit(f"target must be one of {sorted(TARGETS)}")
     call = rl_run.spawn(exp, steps, group_size, forward_budget, rollout_minutes, hours, reward_items, 2, effort, lr, 400, start_from, web, library, rollouts_per_gpu,
-                        rebase_every, update_check, start_base, force_rewards, advantage=advantage, adv_scale=adv_scale, target=target, task=task)
+                        rebase_every, update_check, start_base, force_rewards, advantage=advantage, adv_scale=adv_scale, target=target, task=task,
+                        max_test_answers=max_test_answers, step_offset=step_offset)
     print("SPAWNED", call.object_id)
 
 
