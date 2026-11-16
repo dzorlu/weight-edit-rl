@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 16 November 2026
 
+**Held-out check of the `cur4g16` step-4 editor** (10:40). 4 sessions on Qwen3.5-0.8B as downloaded, edits scored on MATH-500 (original 6.6%): +16.4, +28.8, +14.0, +12.2; mean +17.9, best edit (chosen on the reward set) 35.4%. Untrained editor: mean +11.8, best 23.7%. Editor after 8 updates of 8 sessions (`rebase2`): mean +13.9, best 24.8%. First held-out result where the trained editor is ahead on both measures; 4 sessions per editor.
+
 **`cur4g16` finished** (09:30). Mean reward per step: 16.1, 15.2, 17.0, 19.7 on Qwen as downloaded (steps 1–4; correlation between each session's change in log-likelihood and its advantage 0.80–0.98), then +0.7, +0.9, −0.1, +1.1 on the first updated starting model (`cur4g16-k1`, Qwen plus step 4's best edit at +37.5, 44.5% of the reward set), where 8–9 of 16 sessions submitted no edit and entropy rose from 0.44 to 0.60–0.67. Mean session length with 128-answer tests (steps 3–4): 86–98 minutes, steps ~121 minutes (steps 1–2: 93–118 minutes, ~135). The held-out check of the step-4 editor (4 sessions, Qwen as downloaded, MATH-500) was launched at 07:20, after the step, not at it.
 
 ## 15 November 2026

@@ -1,4 +1,4 @@
-# Evaluation results (snapshot 15 November 2026, 13:10)
+# Evaluation results (snapshot 16 November 2026, 10:40)
 
 All scores are on held-out sets that the editor never sees and that were never used to choose an edit.
 Gains are in percentage points over the unedited model. Small samples: this is a proof of concept, not a measured difference.
@@ -10,11 +10,12 @@ Untrained editor (a fresh LoRA on Inkling 2 Small, no RL) vs trained editor (aft
 | Setting | Sessions per editor | Untrained: per edit | mean / best | Trained: per edit | mean / best |
 |---|---|---|---|---|---|
 | Qwen3.5-0.8B, MATH-500 (original 6.6%) | 4, 90-min cap | +17.1, 0*, +13.8, +16.2 | +11.8 / 23.7% | +18.2, +4.9, +13.5, +18.9 | +13.9 / 24.8% |
+| Qwen3.5-0.8B, MATH-500: editor after 4 steps of run `cur4g16` (16 sessions per step, Dr. GRPO) | 4, 90-min cap | | | +16.4, +28.8, +14.0, +12.2 | +17.9 / 35.4% |
 | Qwen3.5-2B, MATH-500, 250 problems (original 38.0%) | 2, 60-min cap | +26.2, +12.4 | +19.3 / 64.2% | 0 (no edit), +15.6 | +7.8 / 53.6% |
 
 \* this session's edit scored +19.1 on the reward set, but it ended at the time limit and its edit files were not saved, so the held-out score is 0 (a harness bug, counted as 0).
 
-Reading: no RL benefit is shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B the untrained editor did better, with 2 sessions each.
+Reading: the editor after 4 steps of `cur4g16` (16 sessions per step, Dr. GRPO, learning rate 2e-4) gives the best numbers so far on the 0.8B: every edit positive, mean +17.9 against +11.8 (untrained) and +13.9 (8 updates with 8 sessions per step), best edit 35.4% against 23.7% and 24.8%. With 4 sessions per editor this is suggestive, not established. Earlier reading: no RL benefit was shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B the untrained editor did better, with 2 sessions each.
 
 Earlier edits from the training runs, scored on GSM8K test (Qwen3.5-0.8B, original 12.5%; 8 edits each): untrained step 1 mean +20.1 (best +47.3); step 4 (editor after near-zero updates) mean +31.4 (best +46.0).
 
