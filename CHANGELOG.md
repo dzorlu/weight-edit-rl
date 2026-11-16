@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 15 November 2026
 
+**`cur4g16` step 1** (21:15). Mean reward +16.1 over 16 sessions (35.2, 34.8, 27.7, 26.2, 22.3, 22.3, 18.4, 17.2, 16.4, 14.8, 12.9, 12.5, 2.3, 1.2, 0.4, −6.2). Update check: KL 0.0048 per token, correlation 0.93 between each session's change in log-likelihood and its advantage; entropy 0.45. The two sessions that submitted without a single forward pass scored +1.2 and −6.2. New kind of edit in a training run: one unit made to write `</think>` (layer 16 down_proj column 172, +17.2).
+
 **Training run `cur4g16` launched** (18:59; app `ap-yeKuinFvOcuuIZqTGBq3Cy`). Fresh untrained editor, 16 sessions per step (2 per GPU, 8 GPUs), starting model updated every 4 steps, Dr. GRPO advantages (reward − group mean, / 0.10), learning rate 2e-4, 8 steps, 22-hour limit. With the two fixes above: a session's edit is saved before its reward is scored, and a rebased model's prompt lists the edits it already contains. Why: 8 sessions per step were too few to separate a step's mean from noise, and updating the starting model every 1–2 steps left most sessions with nothing to gain. The new editor will be evaluated on the original Qwen (MATH-500) every 4 steps.
 
 **Two fixes before the next run** (`rl/loop.py`).
