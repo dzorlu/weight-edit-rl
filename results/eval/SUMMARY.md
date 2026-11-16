@@ -15,7 +15,7 @@ Untrained editor (a fresh LoRA on Inkling 2 Small, no RL) vs trained editor (aft
 
 \* this session's edit scored +19.1 on the reward set, but it ended at the time limit and its edit files were not saved, so the held-out score is 0 (a harness bug, counted as 0).
 
-Reading: the editor after 4 steps of `cur4g16` (16 sessions per step, Dr. GRPO, learning rate 2e-4) gives the best numbers so far on the 0.8B: every edit positive, mean +17.9 against +11.8 (untrained) and +13.9 (8 updates with 8 sessions per step), best edit 35.4% against 23.7% and 24.8%. With 4 sessions per editor this is suggestive, not established. Earlier reading: no RL benefit was shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B the untrained editor did better, with 2 sessions each.
+Reading: on MATH-500 the step-4 `cur4g16` editor has the best numbers (mean +17.9, best edit 35.4%), but on the reward set the untrained and step-4 editors tie (17.8 vs 17.7); most of the MATH-500 gap comes from the untrained session whose edit was lost to the time-limit bug (untrained mean without it: +15.7). So no RL benefit is established. Earlier reading: no RL benefit was shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B the untrained editor did better, with 2 sessions each.
 
 Earlier edits from the training runs, scored on GSM8K test (Qwen3.5-0.8B, original 12.5%; 8 edits each): untrained step 1 mean +20.1 (best +47.3); step 4 (editor after near-zero updates) mean +31.4 (best +46.0).
 
