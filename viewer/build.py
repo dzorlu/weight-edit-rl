@@ -29,7 +29,11 @@ def const(path, name):
     raise KeyError(name)
 
 
-PROMPT, METHODS, PROTOCOL = const("harness/prompts.py", "PROMPT"), const("editors/tinker_openai.py", "METHODS"), const("editors/tinker_openai.py", "PROTOCOL")
+import importlib.util, sys
+sys.path.insert(0, ".")
+_spec = importlib.util.spec_from_file_location("_prompts", "harness/prompts.py"); _prompts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_prompts)
+PROMPT = _prompts.PROMPT  # generated from the target's architecture since the --target change, so it is imported, not parsed
+METHODS, PROTOCOL = const("editors/tinker_openai.py", "METHODS"), const("editors/tinker_openai.py", "PROTOCOL")
 TOOL_NOTE = "\n\n[The two tools, python and forward, were also given to this editor as function definitions.]"
 
 
