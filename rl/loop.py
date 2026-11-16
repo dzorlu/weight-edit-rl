@@ -224,13 +224,27 @@ BASE_TEXT = """
 
 STARTING WEIGHTS. The weights you are given are {name} with an earlier edit already applied. In this session "original weights" means these starting weights: load_original, the cached original answers in /practice and your score all refer to them. Your task is to improve on them."""
 
+APPLIED_TEXT = """
+
+STARTING WEIGHTS. The weights you are given are {name} with {n} earlier edit{s} already applied, listed below (oldest first). In this session "original weights" means these starting weights: load_original, the cached original answers in /practice and your score all refer to them. Your task is to improve on them.
+The earlier edits are intended and are part of the starting weights. Do not undo, reverse or "repair" them: for example, columns or units that are zero because an earlier edit zeroed them on purpose are not damage. Build on top of them.
+{items}"""
+
+
+def applied_text(name, applied):
+    """The STARTING WEIGHTS section for a starting model that holds the edits in `applied` (applied_edits.json)."""
+    items = []
+    for i, a in enumerate(applied, 1):
+        items.append(f"{i}. Tensors changed: {a['change']}\n   The editor's own description: {a['description']}")
+    return APPLIED_TEXT.format(name=name, n=len(applied), s="s" if len(applied) != 1 else "", items="\n".join(items))
+
 
 MATH_MEASURED = "HOW IT WILL BE MEASURED. The 500 problems of MATH-500, 2 samples per problem, separately for original and edited weights."
 MATH_PRACTICE = "2. Practice problems: 3,000 from the MATH training set and 1,500 from the GSM8K training set, each with a reference solution. They are disjoint from the held-out test after normalized text matching."
 MATH_IDS = 'Practice ids look like "math/geometry/461" and "gsm8k/2754".'
 
 
-def editor_prompt(forward_budget, web=False, known=None, rebased=False, arch=None, task="math", n_practice=None):
+def editor_prompt(forward_budget, web=False, known=None, rebased=False, arch=None, task="math", n_practice=None, applied=None):
     """The RL editor's prompt; every architecture statement comes from `arch` (target_arch; default Qwen3.5-0.8B).
     task: a key of TASKS; its texts replace the MATH-500 / MATH and GSM8K statements (n_practice: its practice problem count)."""
     arch = arch or QWEN35_08B
@@ -265,7 +279,9 @@ def editor_prompt(forward_budget, web=False, known=None, rebased=False, arch=Non
         extra += KNOWN_TEXT.format(n=known["n"], summary=known["summary"], tensors=tensor_names_text(arch), ids=T["ids"] or MATH_IDS)
     if web:
         extra += WEB_TEXT
-    if rebased:
+    if applied:
+        extra += applied_text(arch["name"], applied)
+    elif rebased:
         extra += BASE_TEXT.format(name=arch["name"])
     b = body.index("HOW TO WORK.")
     return body[:b].rstrip() + extra + "\n\n" + body[b:]
@@ -417,10 +433,106 @@ def make_base(tag: str, prev_tag: str, edit_run: str, target: str = DEFAULT_TARG
     os.makedirs(pdst, exist_ok=True)
     for f in ("problems.jsonl", "index.tsv", "splits.json", "README.txt"):
         shutil.copy(os.path.join(psrc, f), os.path.join(pdst, f))
+    br = target_paths(target, task)["bases_r"]
     json.dump({"tag": tag, "prev": prev_tag, "edit_run": edit_run, "tensors": sorted(edits), "target": target},
-              open(f"{target_paths(target, task)['bases_r']}/{tag}/meta.json", "w"), indent=1)
+              open(f"{br}/{tag}/meta.json", "w"), indent=1)
+    prev_applied = applied_chain(prev_tag, target, task) if prev_tag else []
+    json.dump(prev_applied + [describe_edit(edit_run, edits, src)], open(f"{br}/{tag}/applied_edits.json", "w"), indent=1)
     weights.commit(); runs.commit()
     return sorted(edits)
+
+
+def _final_change_text(edit_run, limit=500):
+    """The 'What I changed' part of the FINAL SUBMISSION of the rollout behind /runs/<edit_run> (rl/<exp>/work/<rid>)."""
+    import json, os, re
+    root, _, rid = edit_run.rpartition("/work/")
+    log = f"/runs/{root}/{rid}.jsonl"
+    text = ""
+    if os.path.exists(log):
+        for line in open(log):
+            r = json.loads(line)
+            if "summary" in r and r.get("final_text"):
+                text = r["final_text"]
+    text = re.sub(r"^\s*FINAL SUBMISSION\s*", "", text or "")
+    m = re.search(r"what i changed[^\n:]*[:\n]+(.*?)(?:\n\s*\n\s*\**\s*(?:why|evidence|how|what i expect|diagnosis|results?)\b|\Z)", text, re.I | re.S)
+    out = (m.group(1) if m else text).strip()
+    out = re.sub(r"\s+", " ", out.replace("**", ""))
+    return (out[:limit] + " ...") if len(out) > limit else (out or "(no description in the log)")
+
+
+def describe_edit(edit_run, edits, prev_dir):
+    """One applied edit: which tensors changed and how (measured against the previous starting model), plus the editor's words."""
+    import os, torch
+    from safetensors import safe_open
+    prev = {}
+    for f in os.listdir(prev_dir):
+        if f.endswith(".safetensors"):
+            with safe_open(os.path.join(prev_dir, f), "pt") as fh:
+                for n in edits:
+                    if n in fh.keys():
+                        prev[n] = fh.get_tensor(n)
+    parts = []
+    for n in sorted(edits):
+        short = n.replace("model.language_model.", "")
+        if n not in prev or prev[n].shape != edits[n].shape or edits[n].dim() != 2:
+            parts.append(f"{short} (replaced)"); continue
+        new = edits[n].to(prev[n].dtype).float()  # as stored in the starting model
+        prev[n] = prev[n].float()
+        d = new - prev[n]
+        cols = (d.abs().sum(0) > 0).nonzero().flatten().tolist()
+        rows = (d.abs().sum(1) > 0).nonzero().flatten().tolist()
+        zeroed = [c for c in cols if new[:, c].abs().sum() == 0 and prev[n][:, c].abs().sum() > 0]
+        rel = (d.norm() / prev[n].norm()).item()
+        if zeroed and len(cols) == len(zeroed):
+            parts.append(f"{short}: column{'s' if len(zeroed) > 1 else ''} {', '.join(map(str, zeroed[:20]))} set to zero")
+        elif len(cols) <= 20 and len(cols) < new.shape[1]:
+            parts.append(f"{short}: column{'s' if len(cols) > 1 else ''} {', '.join(map(str, cols))} changed" + (f" ({', '.join(map(str, zeroed))} set to zero)" if zeroed else ""))
+        elif len(rows) <= 20 and len(rows) < new.shape[0]:
+            parts.append(f"{short}: row{'s' if len(rows) > 1 else ''} {', '.join(map(str, rows))} changed")
+        else:
+            try:  # effective rank: directions holding 95% of the change (bf16 rounding adds a small full-rank floor)
+                sv2 = torch.linalg.svdvals(d) ** 2
+                rank = int((torch.cumsum(sv2, 0) / sv2.sum() < 0.95).sum().item()) + 1
+            except Exception:
+                rank = -1
+            parts.append(f"{short}: rank-{rank} change across the whole matrix ({rel:.1%} of its norm)" if rank > 0 else f"{short}: changed ({rel:.1%} of its norm)")
+    if len(parts) > 6:  # many matrices with the same kind of change: one line per kind
+        import re
+        kinds = {}
+        for p in parts:
+            k = re.sub(r" \(\d+(\.\d+)?% of its norm\)", "", p.split(": ", 1)[-1])
+            kinds.setdefault(k, []).append(p.split(":")[0])
+        if len(kinds) < len(parts) / 2:  # only when it shortens the list
+            parts = [(f"{len(v)} matrices ({', '.join(v) if len(v) <= 3 else v[0] + ', ..., ' + v[-1]})" if len(v) > 1 else v[0]) + f": {k}" for k, v in kinds.items()]
+    return {"edit_run": edit_run, "tensors": sorted(edits), "change": "; ".join(parts), "description": _final_change_text(edit_run)}
+
+
+def applied_chain(tag, target=DEFAULT_TARGET, task="math"):
+    """applied_edits.json of a starting model; for a model made before that file existed, rebuilt from its meta.json chain."""
+    import json, os
+    from safetensors.torch import load_file
+    br = target_paths(target, task)["bases_r"]
+    f = f"{br}/{tag}/applied_edits.json"
+    if os.path.exists(f):
+        return json.load(open(f))
+    meta = json.load(open(f"{br}/{tag}/meta.json"))
+    out = applied_chain(meta["prev"], target, task) if meta["prev"] else []
+    ed = f"/runs/{meta['edit_run']}/work/edited"
+    edits = {g[:-len(".safetensors")]: load_file(os.path.join(ed, g))["t"] for g in sorted(os.listdir(ed)) if g.endswith(".safetensors")}
+    out = out + [describe_edit(meta["edit_run"], edits, base_dirs(meta["prev"], target, task)[0])]
+    json.dump(out, open(f, "w"), indent=1)
+    return out
+
+
+@app.function(image=offline, volumes={"/weights": weights, "/runs": runs}, timeout=30 * 60, cpu=8, memory=32768)
+def backfill_applied(tags: str, target: str = DEFAULT_TARGET, task: str = "math"):
+    """Write applied_edits.json for starting models made before it existed (comma-separated tags); returns the prompt section."""
+    runs.reload()
+    out = {}
+    for tag in [t for t in tags.split(",") if t]:
+        out[tag] = applied_text(target_arch(target)["name"], applied_chain(tag, target, task))
+    runs.commit()
+    return out
 
 
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=100 * 60, memory=65536, cpu=8)
@@ -612,7 +724,10 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 rows = (await Target.with_options(scaledown_window=120)(rid=f"{exp}-base", target=target, task=task).reward.remote.aio(items_json, reward_n, GEN_CAP, True))["original"]
                 json.dump(rows, open(base_cache, "w"))
         ok = {(r["qid"], r["sample"]): r["correct"] for r in rows}
-        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice), "ok": ok, "acc": sum(ok.values()) / len(ok)}
+        ap_file = f"{TP['bases_r']}/{tag}/applied_edits.json" if tag else ""
+        applied = json.load(open(ap_file)) if ap_file and os.path.exists(ap_file) else None
+        B = {"tag": tag, "prompt": editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice, applied=applied),
+             "ok": ok, "acc": sum(ok.values()) / len(ok)}
         slog({"event": "reward_base", "base": tag, "answers": len(ok), "accuracy": round(B["acc"], 4),
               "hit_cap": round(sum(r["finish"] == "length" for r in rows) / len(rows), 4), "seconds": round(time.time() - t)})
         return B
@@ -776,8 +891,22 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                     messages.append({"role": "tool", "tool_call_id": other.id or "call_x", "name": other.function.name, "content": "[not run: only the first tool call of a reply is run]"})
                 if asked_final and time.time() > deadline + 15 * 60:
                     ended = "time limit (hard)"; break
+            # Save the work folder (with the submitted edit) first, whatever ended the session: a target replaced after the
+            # reward call left an empty folder once, and held-out scoring then found no edit.
+            snap_dir = f"/runs/{root}/{exp}/work/{rid}/work/edited"
+            try:
+                await call("snapshot", f"{root}/{exp}/work/{rid}")
+            except Exception as e:
+                w({"snapshot_error": repr(e)[:300]})
             # reward: the submitted edit against the cached original answers, paired by problem and sample
             rw = await call("reward", items_json, reward_n, GEN_CAP, False)
+            try:
+                runs.reload()
+                saved = sorted(f[:-len(".safetensors")] for f in os.listdir(snap_dir) if f.endswith(".safetensors")) if os.path.isdir(snap_dir) else []
+                if sorted(rw["edited_tensors"] or []) != saved:
+                    w({"snapshot_mismatch": {"scored": len(rw["edited_tensors"] or []), "saved": len(saved)}})
+            except Exception as e:
+                w({"snapshot_check_error": repr(e)[:300]})
             if rw["edited"] is None:
                 reward, acc_e, cap_e = 0.0, None, None
             else:
@@ -791,10 +920,6 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                     lib_out = await call("get_files", LIBRARY)
                 except Exception as e:
                     w({"library_error": repr(e)[:300]})
-            try:
-                await call("snapshot", f"{root}/{exp}/work/{rid}")
-            except Exception as e:
-                w({"snapshot_error": repr(e)[:300]})
             usd = (tok["prefill"] * PRICE["prefill"] + tok["cached"] * PRICE["cached"] + tok["sampled"] * PRICE["sample"]) / 1e6
             info = {"rid": rid, "ok": True, "reward": round(reward, 4), "edited_accuracy": acc_e, "edited_hit_cap": cap_e, "edited_tensors": rw["edited_tensors"], "ended": ended,
                     "turns": turn, "forward_used": used_f, "python_used": used_py, "web_used": used_web, "target_restarts": restarts, "minutes": round((time.time() - t0) / 60, 1), "tokens": tok, "sampling_usd": round(usd, 3),
