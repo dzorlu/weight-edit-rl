@@ -1,6 +1,6 @@
 # Weight-space programming: landscape and next ablations (snapshot 2026-11-16)
 
-Sources read in full unless noted: Takehi et al., "Sparks of Weight-Space Programming" (MIT CSAIL blog, via citations); Hu et al., arXiv 2611.09382 (via the earlier sweep); WSP-Gym (README, github.com/emeraldant/WSP-Gym); Naik, Liu, Gangal, "Auto Weight-Space Programming (Part 1)"; Marasini, Khadka, Rahimi, "WeightBench", arXiv 2611.18553; Mehta et al., "Interpretable weight-space programming builds transparent transformers and brain encoding models", arXiv 2611.18114; Ostrow, Qian, Fiete, Liu, "A Mathematical Theory of the Jacobian Lens", arXiv 2610.31955; Cohen and Shapira, "Can we compress backpropagation into a model?" (roicohen.org); the ulam-2-small LinkedIn post (pasted text). Not read: the LinkedIn article "Suppressing Wait stops small models' reasoning loops (Jacobian…)" (login wall).
+Sources read in full unless noted: Takehi et al., "Sparks of Weight-Space Programming" (MIT CSAIL blog, via citations); Hu et al., arXiv 2611.09382 (via the earlier sweep); WSP-Gym (README, github.com/emeraldant/WSP-Gym); Naik, Liu, Gangal, "Auto Weight-Space Programming (Part 1)"; Marasini, Khadka, Rahimi, "WeightBench", arXiv 2611.18553; Mehta et al., "Interpretable weight-space programming builds transparent transformers and brain encoding models", arXiv 2611.18114; Ostrow, Qian, Fiete, Liu, "A Mathematical Theory of the Jacobian Lens", arXiv 2610.31955; Cohen and Shapira, "Can we compress backpropagation into a model?" (roicohen.org); the ulam-2-small LinkedIn post (pasted text). Also read: Marthi, "Suppressing 'Wait' stops a small model's reasoning loops. The Jacobian lens added nothing in my tests" (LinkedIn, 16 Nov 2026; text pasted by the user).
 
 ## Directions
 
@@ -9,6 +9,8 @@ Sources read in full unless noted: Takehi et al., "Sparks of Weight-Space Progra
 3. **Trained weight writers** (WSP-Gym: SFT on planted faults, then RL; Cohen–Shapira: a meta-model writes ΔW for Qwen3.5-2B from a task description, trained by regression, then loss through the base model, then reward; AWSP: writing weights fails). The trained writers mostly remove a tendency (a favourite answer, a loop) and add no knowledge; with reasoning on, Cohen–Shapira's update cuts MATH-500 22.8 → 10.5.
 4. **Models written from scratch** (arXiv 2611.18114): agents program small transformers and brain encoders in code; 100% on algorithmic tasks, then compression to ~166 parameters; "current agents do not invent genuinely new computational principles."
 5. **Localisation theory** (Jacobian lens, arXiv 2610.31955): averaged-Jacobian directions pick out modes that persist across tokens and contexts even at low variance; toy models only.
+
+**Marthi (LinkedIn, 16 Nov 2026).** On Qwen3.5-0.8B, 96 templated arithmetic problems, 2,048 tokens, temperature 0.3, one sample: a direction built from hesitation tokens ("Wait", "Hmm", "But", "Actually", "Okay") through the Jacobian lens, ablated in activations at layers 15–19, cut looping 30 → 17 and raised correct answers 28 → 44; the logit-lens direction reached 46; a plain sampling-time ban on those tokens did best (16 loops, 48 correct, 2 of 28 baseline-correct problems lost vs 8–14 for the ablations); random directions did nothing. At layers 8–12 the Jacobian lens did not help (looping 41 vs 30 baseline). A direction from contrasting looping vs non-looping generations was a null result. Re-running the same 14 looping prompts looped 6 of 14 times. Cites a closed-form MEMIT-style edit of one layer-23 MLP output matrix ("Embedding", vendor post) with a KL gate on protected text (reject if > 0.03 KL); without it, WikiText perplexity exploded. Conclusion: suppressing hesitation tokens reduces loops; the lens finds nothing a ban misses.
 
 ## What the field agrees on
 
@@ -19,7 +21,7 @@ Sources read in full unless noted: Takehi et al., "Sparks of Weight-Space Progra
 
 ## Ranked ablations for hill-climbing on this task
 
-1. **Ban baselines on our harness** (~$15): "Wait" ban; "Wait" ban + our best edit; at 8k and 32k caps. Decides whether our edits exceed the ban and whether the 48.1% vs 39% gap is the token cap.
+1. **Ban baselines on our harness** (~$15; Marthi's ban beat every ablation, including on problems already solved): "Wait" ban; "Wait" ban + our best edit; at 8k and 32k caps. Decides whether our edits exceed the ban and whether the 48.1% vs 39% gap is the token cap.
 2. **Truncation and length diagnostics** (free, from logs): accuracy on problems the base already solves, mean length, "Wait"/reflection-token rates, early `</think>` rate for every edit. Catches gains that come from cutting reasoning.
 3. **Random matched controls** (~$10): equal-norm, equal-location, equal-rank random edits on the editor's chosen tensors.
 4. **Ban as the new base**: train and evaluate the editor on Qwen with the loop already removed (ban or the best edit), with reward = gain over that base plus a guard penalty on a non-math set (WeightBench's collateral term). Forces gains beyond the loop.
