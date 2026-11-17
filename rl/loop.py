@@ -1532,3 +1532,38 @@ def prep_task(task: str, target: str = DEFAULT_TARGET, gpus: int = 1, limit: int
         print("part", k, c.object_id)
     for k, c in calls.items():
         print("part", k, "done", c.get())
+
+@app.function(image=rl_image, secrets=[modal.Secret.from_name("tinker")], timeout=3600)
+def resave_checkpoint(state_path: str, name: str):
+    """Load a Tinker training state and save it again, state and sampler weights, with no expiry."""
+    import tinker
+    svc = tinker.ServiceClient()
+    tc = svc.create_training_client_from_state(state_path).result()
+    st = tc.save_state(name).result()
+    sp = tc.save_weights_for_sampler(name).result()
+    return {"state": st.path, "sampler": sp.path}
+
+
+@app.function(image=rl_image, secrets=[modal.Secret.from_name("tinker")], timeout=600)
+def find_checkpoints(substr: str):
+    """Paths of this account's Tinker checkpoints whose name contains `substr`."""
+    import tinker
+    rc = tinker.ServiceClient().create_rest_client()
+    out = []
+    for c in rc.list_user_checkpoints().result().checkpoints:
+        p = getattr(c, "tinker_path", None) or getattr(c, "path", None) or str(c)
+        if substr in p:
+            out.append((p, str(getattr(c, "expires_at", None))))
+    return out
+
+
+@app.local_entrypoint()
+def find(substr: str):
+    for row in find_checkpoints.remote(substr):
+        print(*row)
+
+
+@app.local_entrypoint()
+def keep(state_path: str, name: str):
+    """Keep a checkpoint: re-save a training state and its sampler weights without an expiry date."""
+    print(resave_checkpoint.remote(state_path, name))
