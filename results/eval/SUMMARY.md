@@ -1,4 +1,4 @@
-# Evaluation results (snapshot 16 November 2026, 10:40)
+# Evaluation results (snapshot 16 November 2026, 19:00)
 
 All scores are on held-out sets that the editor never sees and that were never used to choose an edit.
 Gains are in percentage points over the unedited model. Small samples: this is a proof of concept, not a measured difference.
@@ -11,11 +11,13 @@ Untrained editor (a fresh LoRA on Inkling 2 Small, no RL) vs trained editor (aft
 |---|---|---|---|---|---|
 | Qwen3.5-0.8B, MATH-500 (original 6.6%) | 4, 90-min cap | +17.1, 0*, +13.8, +16.2 | +11.8 / 23.7% | +18.2, +4.9, +13.5, +18.9 | +13.9 / 24.8% |
 | Qwen3.5-0.8B, MATH-500: editor after 4 steps of run `cur4g16` (16 sessions per step, Dr. GRPO) | 4, 90-min cap | | | +16.4, +28.8, +14.0, +12.2 | +17.9 / 35.4% |
+| Qwen3.5-0.8B, MATH-500: untrained editor rerun with the save fix | 4, 90-min cap | +12.2, +18.5, +17.9, +0.5 | +12.3 / 25.1% | | |
+| Qwen3.5-0.8B, MATH-500: editor after 8 steps of run `cur4g16` | 4, 90-min cap | | | +20.8, +31.9, +19.0, +23.5 | +23.8 / 38.5% |
 | Qwen3.5-2B, MATH-500, 250 problems (original 38.0%) | 2, 60-min cap | +26.2, +12.4 | +19.3 / 64.2% | 0 (no edit), +15.6 | +7.8 / 53.6% |
 
 \* this session's edit scored +19.1 on the reward set, but it ended at the time limit and its edit files were not saved, so the held-out score is 0 (a harness bug, counted as 0).
 
-Reading: on MATH-500 the step-4 `cur4g16` editor has the best numbers (mean +17.9, best edit 35.4%), but on the reward set the untrained and step-4 editors tie (17.8 vs 17.7); most of the MATH-500 gap comes from the untrained session whose edit was lost to the time-limit bug (untrained mean without it: +15.7). So no RL benefit is established. Earlier reading: no RL benefit was shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B the untrained editor did better, with 2 sessions each.
+Reading (16 November, 19:00): pooling both untrained runs (8 sessions; 7 edits scored on MATH-500, one lost to the since-fixed save bug), the untrained editor gains +13.7 per edit on MATH-500 and +14.7 on the reward set. The step-4 editor: +17.9 and +17.7. The step-8 editor: +23.8 and +24.5, every edit above +19, best edit 38.5% against 25.1% (best untrained, rerun). The step-8 editor is ahead by about 10 points on both sets; 4 sessions for the trained editors, so a first positive result rather than an established one. Earlier reading: no RL benefit was shown. On the 0.8B the trained editor is about 2 points ahead (within noise); on the 2B the untrained editor did better, with 2 sessions each.
 
 Earlier edits from the training runs, scored on GSM8K test (Qwen3.5-0.8B, original 12.5%; 8 edits each): untrained step 1 mean +20.1 (best +47.3); step 4 (editor after near-zero updates) mean +31.4 (best +46.0).
 
