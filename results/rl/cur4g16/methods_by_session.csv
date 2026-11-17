@@ -1,0 +1,129 @@
+step,session,reward,diagnosis,tf,attr_calls,dom_calls,lens_calls,edit,target,detail,edited_tests
+1,s0-r0,18.4,teacher-forced passes; attribution; logit/readout lens,3,3,0,4,readout amplify,think,+0.75 on 24 down_proj,8
+1,s0-r1,22.3,teacher-forced passes; attribution; difference of means; logit/readout lens,4,9,5,11,loop direction remove + units zero,loop+wait,loop dir -1 on 48 writers; 7 Wait units = 0,9
+1,s0-r2,2.3,teacher-forced passes; attribution; difference of means; logit/readout lens,4,9,4,11,units scale,think,14 </think>-writing units x2.5,5
+1,s0-r3,0.4,teacher-forced passes; attribution; difference of means; logit/readout lens,6,7,4,14,readout amplify,other,'boxed'-specific readout +1.5 on L23 o_proj,7
+1,s0-r4,12.5,teacher-forced passes; attribution; difference of means; logit/readout lens,8,15,8,21,loop direction remove + readout remove,loop+wait,"L23 attn loop dir and (Wait - </think>) axis removed, L23 o_proj",9
+1,s0-r5,16.4,teacher-forced passes; attribution; difference of means; logit/readout lens,2,4,5,11,units zero,wait,8 Wait units = 0,5
+1,s0-r6,-6.2,logit/readout lens; weights only before first edit,0,0,0,3,units zero,wait,17 Wait/But/Oh units = 0,0
+1,s0-r7,35.2,teacher-forced passes; attribution; difference of means; logit/readout lens,2,7,2,6,readout remove + readout amplify,wait+think,Wait (2 tokens) -1 on 24 down_proj; </think> +3 on 15 unit columns,9
+1,s0-r8,17.2,teacher-forced passes; attribution; difference of means; logit/readout lens,8,2,2,12,unit writes token,think,L16 col 172 += 1.0 r(</think>),6
+1,s0-r9,1.2,logit/readout lens; weights only before first edit,0,0,0,4,readout amplify,think,+0.5 one-sided (ReLU) on 24 down_proj,0
+1,s0-r10,14.8,teacher-forced passes; attribution; difference of means; logit/readout lens,4,12,3,2,units zero,wait,16 Wait units = 0,6
+1,s0-r11,12.9,teacher-forced passes; attribution; logit/readout lens,3,7,0,14,readout remove,wait,Wait (2 tokens) -2 (sign flip) on L23 o_proj,7
+1,s0-r12,26.2,teacher-forced passes; attribution; difference of means; logit/readout lens,1,5,2,6,readout remove + readout amplify,wait+think,"Wait -1, </think> +0.6 on 24 down_proj",10
+1,s0-r13,34.8,teacher-forced passes; attribution; logit/readout lens,6,2,0,6,readout amplify,think,</think>-specific +2.5 on 16 writers L16-23,9
+1,s0-r14,27.7,teacher-forced passes; attribution; difference of means; logit/readout lens,3,5,4,20,gated rank-1 write,think,"outer(r(</think>), b_loop), scale 1/S, 22 down_proj",9
+1,s0-r15,22.3,teacher-forced passes; attribution; difference of means; logit/readout lens,4,8,5,2,loop direction remove + readout amplify,loop+think,loop dir -2 (reflection) on L23 o_proj; </think>-specific +1 on 24 down_proj,8
+2,s1-r0,4.7,teacher-forced passes; attribution; difference of means; logit/readout lens,3,3,7,12,readout remove,other,(</think> - indent token) direction -1 on 48 writers,6
+2,s1-r1,7.8,teacher-forced passes; attribution; difference of means; logit/readout lens,3,3,9,8,readout remove + readout amplify,wait+think,"Wait-specific -1, </think>-specific +1.5 on L23 o_proj",13
+2,s1-r2,21.9,teacher-forced passes; attribution; difference of means; logit/readout lens,6,11,2,12,readout remove,wait,Wait -1 on 48 writers,7
+2,s1-r3,8.2,teacher-forced passes; attribution; difference of means; logit/readout lens,4,4,3,3,loop direction remove,loop,final-residual loop dir -1 on 24 down_proj,7
+2,s1-r4,19.1,teacher-forced passes; attribution; logit/readout lens,4,9,0,13,readout remove,wait,Wait (2 tokens) -1 on 30 writers,7
+2,s1-r5,7.0,teacher-forced passes; attribution; difference of means; logit/readout lens,3,2,3,6,readout amplify,think,(</think> - Wait) direction +1.0 on 48 writers,7
+2,s1-r6,13.7,teacher-forced passes; attribution; difference of means; logit/readout lens,7,3,11,25,readout amplify,think,+0.7 on 10 writers L16-23,17
+2,s1-r7,14.8,teacher-forced passes; attribution; difference of means; logit/readout lens,4,8,2,3,readout amplify,think,</think>-specific +1.5 on 13 writers,9
+2,s1-r8,25.4,teacher-forced passes; attribution; difference of means; logit/readout lens,3,6,10,7,gated rank-1 write,think,"outer(0.12 r(</think>), b_loop) on L23 down_proj",7
+2,s1-r9,27.3,teacher-forced passes; attribution; logit/readout lens,3,3,0,9,readout remove + readout amplify,wait+think,"Wait -1, </think> +0.25 on 48 writers",10
+2,s1-r10,17.6,teacher-forced passes; attribution; difference of means; logit/readout lens,7,5,7,6,loop direction remove + readout remove,loop+wait,loop dir -1 on 30 writers; Wait -1 on 6 o_proj,8
+2,s1-r11,5.5,teacher-forced passes; attribution; difference of means; logit/readout lens,4,6,1,9,attention head,other,L23 head 6 output block = 0,8
+2,s1-r12,18.0,teacher-forced passes; attribution; difference of means; logit/readout lens,6,6,5,3,readout remove,wait,Wait -4 on L23 o_proj,8
+2,s1-r13,14.1,teacher-forced passes; attribution; difference of means; logit/readout lens,4,4,2,13,readout remove + readout amplify,wait+think,"Wait -1, </think> +1 on L23 o_proj",5
+2,s1-r14,18.0,teacher-forced passes; attribution; difference of means; logit/readout lens,9,11,7,2,loop direction remove,loop,per-layer attention loop dir -1 on 24 attention writers,8
+2,s1-r15,19.5,teacher-forced passes; attribution; difference of means; logit/readout lens,5,9,3,17,units zero + units scale + loop direction remove,wait+loop,6 Wait units = 0; L22 u573 x2; loop dir -1 on L23 o_proj,7
+3,s2-r0,6.6,teacher-forced passes; attribution; difference of means; logit/readout lens,3,5,3,1,loop direction remove + units zero,loop,loop dir -1 on 48 writers; 7 loop units = 0,13
+3,s2-r1,2.3,teacher-forced passes; attribution; logit/readout lens,5,7,0,13,readout amplify,think,+0.1 on L23 o_proj,9
+3,s2-r2,13.7,teacher-forced passes; attribution; difference of means; logit/readout lens,5,7,6,32,readout amplify,think,"+1.0 / +0.75 on 4 writers (L19, L23)",16
+3,s2-r3,10.2,teacher-forced passes; attribution; difference of means; logit/readout lens,3,8,4,8,units zero,wait,14 Wait units = 0,10
+3,s2-r4,13.7,teacher-forced passes; attribution; difference of means; logit/readout lens,3,7,5,12,readout remove,wait,Wait (2 tokens) -1 on 48 writers,7
+3,s2-r5,16.8,teacher-forced passes; attribution; difference of means; logit/readout lens,4,7,1,2,units zero,wait,14 Wait units = 0,10
+3,s2-r6,14.8,teacher-forced passes; attribution; difference of means; logit/readout lens,4,6,4,12,loop direction remove,loop,per-layer loop dir -1 on 7 attention writers,9
+3,s2-r7,24.2,teacher-forced passes; attribution; logit/readout lens,2,4,0,13,readout remove + readout amplify,wait+think,"Wait -1, </think> +0.3 on 48 writers",11
+3,s2-r8,12.9,teacher-forced passes; attribution; difference of means; logit/readout lens,5,8,5,2,units zero + loop direction remove,wait+loop,2 units = 0; loop dir -0.5 on L23 o_proj,13
+3,s2-r9,13.3,teacher-forced passes; attribution; difference of means; logit/readout lens,7,4,18,13,gated rank-1 write,think,"outer(r(</think>), b_pre-close) +0.035 on 4 down_proj",16
+3,s2-r10,15.2,teacher-forced passes; attribution; difference of means; logit/readout lens,3,5,1,1,readout amplify,think,+1.0 on L23 down_proj,11
+3,s2-r11,37.5,teacher-forced passes; attribution; difference of means; logit/readout lens,4,3,2,3,gated rank-1 write,think,"outer(r(</think>), b_loop) +0.08 on 24 down_proj",6
+3,s2-r12,16.4,teacher-forced passes; attribution; difference of means; logit/readout lens,5,4,2,14,readout remove,wait,Wait -1 on 8 writers,12
+3,s2-r13,19.9,teacher-forced passes; attribution; difference of means; logit/readout lens,5,7,1,5,readout remove,wait,Wait-specific -1 on 48 writers,6
+3,s2-r14,30.9,teacher-forced passes; attribution; difference of means; logit/readout lens,2,6,2,2,readout amplify + units scale,think,</think>-specific +1.0 on 24 down_proj; 14 units x3,15
+3,s2-r15,23.4,teacher-forced passes; attribution; difference of means; logit/readout lens,4,13,7,10,units scale,anti-wait,L22 u573 x5,13
+4,s3-r0,19.5,teacher-forced passes; attribution; difference of means; logit/readout lens,2,2,3,3,units scale,anti-wait,L22 u573 x3,11
+4,s3-r1,14.8,teacher-forced passes; attribution; logit/readout lens,6,7,0,4,readout amplify,think,+5 on L23 o_proj,10
+4,s3-r2,14.4,teacher-forced passes; attribution; difference of means; logit/readout lens,7,6,5,6,units zero,wait,5 Wait units = 0,12
+4,s3-r3,19.9,teacher-forced passes; attribution; logit/readout lens,3,5,0,7,readout remove,wait,Wait -1 on 48 writers,12
+4,s3-r4,19.1,teacher-forced passes; attribution; difference of means; logit/readout lens,2,10,4,1,units zero + units scale,wait+anti-wait,3 units = 0; L22 u573 and L23 u211 x2,10
+4,s3-r5,3.9,teacher-forced passes; attribution; difference of means; logit/readout lens,4,3,2,18,readout amplify,think,</think>-specific +5.5 on L23 o_proj,11
+4,s3-r6,24.6,teacher-forced passes; attribution; difference of means; logit/readout lens,3,3,2,8,readout remove + units zero,wait,Wait -1 on 48 writers; 5 units = 0,6
+4,s3-r7,18.8,teacher-forced passes; attribution; difference of means; logit/readout lens,4,4,1,12,readout remove,wait,Wait -1 on 30 writers,10
+4,s3-r8,23.4,teacher-forced passes; attribution; logit/readout lens,3,4,0,2,units scale + units zero,anti-wait+wait,L22 u573 x8; 6 units = 0,10
+4,s3-r9,18.4,teacher-forced passes; attribution; logit/readout lens,3,4,0,8,units scale,anti-wait,4 Wait-suppressing units x3,7
+4,s3-r10,27.0,teacher-forced passes; attribution; logit/readout lens,3,5,0,5,units zero + units scale,wait+think,L16 u998 = 0; L19 u31 x8,10
+4,s3-r11,22.3,teacher-forced passes; attribution; difference of means; logit/readout lens,3,7,3,10,loop direction remove,loop,L23 residual loop dir -1 on 48 writers,7
+4,s3-r12,30.1,teacher-forced passes; attribution; difference of means; logit/readout lens,2,5,3,4,units zero + readout amplify,wait+think,~27 Wait units = 0; </think>-specific +1.0 on 12 down_proj,8
+4,s3-r13,19.9,teacher-forced passes; logit/readout lens,3,0,0,4,readout remove,wait,Wait -1 on 24 down_proj,10
+4,s3-r14,17.2,teacher-forced passes; attribution; logit/readout lens,6,6,0,17,readout remove,wait,Wait (2 tokens) -3 on L23 o_proj,12
+4,s3-r15,21.5,teacher-forced passes; attribution; difference of means; logit/readout lens,5,7,6,18,readout remove,wait,Wait -1 on 48 writers,10
+5,s4-r0,0,teacher-forced passes; attribution; difference of means; logit/readout lens,6,5,8,13,none,-,329 tensors saved identical to the starting weights,4
+5,s4-r1,0,teacher-forced passes; attribution; difference of means; logit/readout lens,3,2,6,2,none,-,-,4
+5,s4-r2,0.8,teacher-forced passes; attribution; difference of means; logit/readout lens,3,5,1,3,gated rank-1 write,other,"outer(r(To)+r(The), b post-</think> spam) +0.1 on 10 down_proj",10
+5,s4-r3,3.1,teacher-forced passes; attribution; difference of means; logit/readout lens,3,3,5,13,gated rank-1 write,wait,"outer(r(Wait), b_loop) -0.10 on 11 down_proj",11
+5,s4-r4,0,teacher-forced passes; attribution; logit/readout lens,4,1,0,7,none,-,-,4
+5,s4-r5,3.5,teacher-forced passes; attribution; difference of means; logit/readout lens,5,3,3,5,readout remove,wait,Wait -1 on L23 o_proj,11
+5,s4-r6,7.0,teacher-forced passes; attribution; logit/readout lens,4,4,0,3,units zero,wait+think-,25 Wait-loop and </think>-repeat units = 0,7
+5,s4-r7,0,teacher-forced passes; logit/readout lens,4,0,0,4,none,-,-,9
+5,s4-r8,-2.3,teacher-forced passes; attribution; difference of means; logit/readout lens,4,2,14,13,gated rank-1 write,think-+other,"outer(r(</think>), b) -0.01 on L22-23; outer(r(boxed), b) +0.005 on L0-22",11
+5,s4-r9,0,teacher-forced passes; attribution; difference of means; logit/readout lens,6,6,5,4,none,-,-,7
+5,s4-r10,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,4,4,7,none,-,-,3
+5,s4-r11,2.7,teacher-forced passes; attribution; difference of means; logit/readout lens,3,3,4,7,readout remove,wait,Wait -1 on 48 writers,11
+5,s4-r12,0,teacher-forced passes; attribution; difference of means; logit/readout lens,6,2,5,1,none,-,-,4
+5,s4-r13,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,7,2,6,none,-,-,4
+5,s4-r14,0,teacher-forced passes; attribution; difference of means; logit/readout lens,6,10,8,9,none,-,-,2
+5,s4-r15,-3.5,teacher-forced passes; attribution; difference of means; logit/readout lens,4,5,4,10,units zero,think-,11 </think>-restart units = 0,11
+6,s5-r0,0.8,teacher-forced passes; attribution; difference of means; logit/readout lens,5,3,2,14,gated rank-1 write,think-,"outer(r(</think>), b answer-phase) -0.08 on 24 down_proj",9
+6,s5-r1,0.4,teacher-forced passes; attribution; difference of means; logit/readout lens,3,2,7,7,units zero + units scale,wait+anti-wait,"11 Wait units = 0; L20 u405, L22 u573 x2",14
+6,s5-r2,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,5,9,4,none,-,-,13
+6,s5-r3,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,3,3,5,none,-,-,10
+6,s5-r4,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,6,5,10,none,-,-,6
+6,s5-r5,0,teacher-forced passes; difference of means; logit/readout lens,3,0,2,2,none,-,-,3
+6,s5-r6,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,4,6,6,none,-,-,3
+6,s5-r7,2.7,teacher-forced passes; attribution; difference of means; logit/readout lens,5,1,14,4,gated rank-1 write,wait,"outer(r(Wait), b_loop) -0.04 on 24 down_proj",10
+6,s5-r8,1.9,teacher-forced passes; attribution; logit/readout lens,3,12,0,7,readout remove,think-,</think> -1 on L23 o_proj,7
+6,s5-r9,1.6,teacher-forced passes; difference of means; logit/readout lens,2,0,2,7,gated rank-1 write,other,"outer(r(The), b_loop) +0.04 on 24 down_proj",11
+6,s5-r10,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,7,4,6,none,-,-,4
+6,s5-r11,6.6,teacher-forced passes; attribution; difference of means; logit/readout lens,4,2,2,5,gated rank-1 write,wait,"outer(r(Wait), b_loop) -0.15 on 24 down_proj",11
+6,s5-r12,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,6,1,8,none,-,-,4
+6,s5-r13,-0.8,teacher-forced passes; attribution; difference of means; logit/readout lens,3,2,3,1,units zero,wait,16 loop units = 0,11
+6,s5-r14,0,,0,0,0,0,failed,-,session failed (no summary),0
+6,s5-r15,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,3,4,5,none,-,-,7
+7,s6-r0,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,6,4,7,none,-,-,3
+7,s6-r1,0,teacher-forced passes; attribution; difference of means; logit/readout lens,2,3,1,4,none,-,-,10
+7,s6-r2,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,2,8,5,none,-,-,5
+7,s6-r3,0,teacher-forced passes; difference of means; logit/readout lens,7,0,10,3,none,-,-,8
+7,s6-r4,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,3,4,10,none,-,-,11
+7,s6-r5,0,teacher-forced passes; attribution; logit/readout lens,5,2,0,2,none,-,-,5
+7,s6-r6,-1.9,teacher-forced passes; attribution; difference of means; logit/readout lens,4,4,2,1,gated rank-1 write,wait,"outer(r(Wait), b_loop) -0.05 on 24 down_proj",13
+7,s6-r7,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,9,3,4,none,-,-,2
+7,s6-r8,0,teacher-forced passes; difference of means; logit/readout lens,4,0,4,6,none,-,-,3
+7,s6-r9,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,1,3,2,none,-,-,6
+7,s6-r10,0,teacher-forced passes; attribution; difference of means; logit/readout lens,2,2,1,4,none,-,-,7
+7,s6-r11,1.2,teacher-forced passes; attribution; difference of means; logit/readout lens,2,3,1,3,readout remove,wait,Wait -1 on 24 attention writers,11
+7,s6-r12,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,6,5,4,none,-,-,5
+7,s6-r13,1.9,teacher-forced passes; attribution; difference of means; logit/readout lens,4,2,4,7,gated rank-1 write,wait,"outer(r(Wait)+r( Wait), b post-</think>) -0.1 on 4 down_proj",10
+7,s6-r14,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,4,12,1,none,-,-,8
+7,s6-r15,-1.9,teacher-forced passes; attribution; difference of means; logit/readout lens,8,3,3,6,none,-,24 tensors saved identical to the starting weights (reported),4
+8,s7-r0,3.1,teacher-forced passes; attribution; difference of means; logit/readout lens,4,5,7,3,units zero,think-,7 </think>-repeat units = 0,11
+8,s7-r1,0,,0,0,0,0,failed,-,session failed (no summary),0
+8,s7-r2,-2.7,teacher-forced passes; attribution; difference of means; logit/readout lens,3,2,2,15,readout remove,think-,"</think> -1 on 6 o_proj, -0.5 on 18 out_proj",13
+8,s7-r3,2.7,teacher-forced passes; attribution; difference of means; logit/readout lens,3,2,2,3,readout remove,wait,Wait -1 on 49 writers,9
+8,s7-r4,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,7,3,4,none,-,-,15
+8,s7-r5,0,teacher-forced passes; attribution; difference of means; logit/readout lens,5,5,1,2,none,-,-,5
+8,s7-r6,0,teacher-forced passes; attribution; difference of means; logit/readout lens,4,4,6,2,none,-,-,5
+8,s7-r7,-1.2,teacher-forced passes; attribution; logit/readout lens,4,4,0,1,units zero,wait,4 Wait units = 0,11
+8,s7-r8,-1.9,teacher-forced passes; attribution; difference of means; logit/readout lens,3,4,6,10,none,-,24 tensors saved identical to the starting weights (reported),5
+8,s7-r9,3.9,teacher-forced passes; attribution; difference of means; logit/readout lens,4,3,4,4,readout remove,wait,Wait (2 tokens) -0.5 on 48 writers,10
+8,s7-r10,3.9,teacher-forced passes; difference of means; logit/readout lens,3,0,1,3,gated rank-1 write,wait,"outer(r(Wait)s, b_loop) -0.05 on 24 down_proj",11
+8,s7-r11,0,teacher-forced passes; attribution; difference of means; logit/readout lens,3,1,2,1,none,-,-,5
+8,s7-r12,6.6,teacher-forced passes; attribution; logit/readout lens,4,3,0,6,readout remove,wait,Wait -2 on 8 down_proj L16-23,14
+8,s7-r13,2.7,teacher-forced passes; attribution; difference of means; logit/readout lens,2,2,1,3,readout remove,wait,Wait (2 tokens) -0.6 on 48 writers,14
+8,s7-r14,0,teacher-forced passes; difference of means; logit/readout lens,3,0,2,3,none,-,-,3
+8,s7-r15,0,teacher-forced passes; attribution; difference of means; logit/readout lens,3,4,2,4,none,-,-,7
