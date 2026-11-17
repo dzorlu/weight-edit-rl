@@ -2,6 +2,10 @@
 
 Changes to the prompt, the tools and the RL setup, newest first, with the reason for each.
 
+## 17 November 2026
+
+**Gradient tool and its ablation** (`--grad-tool`; `results/eval/grad_tool_ablation.md`). A forward request type `gradient`: one backward pass on up to 8 texts, returning activation × gradient attributions of a target (log-prob of given tokens, or the loss) per layer, MLP unit and attention head; no optimizer, weights unchanged (smoke test: `harness.target --step gradsmoke`). Ablation with the step-8 editor on the starting model `cur4g16-s8best`, 4 sessions per arm: current tools reward +1.2 / MATH-500 −1.2 per session; with the gradient tool +0.4 / +1.4 (3 of 4 sessions submitted no edit). The tool was used in 1 of 4 sessions (3 calls: one on a mistyped text, one out of memory at ~4,000 tokens). Neither arm finds a gain beyond the loop fix. Two limits found: forward requests take texts as literal strings (the editor cannot reference its saved answers), and texts near 4,096 tokens run out of memory next to the packed vLLM servers.
+
 ## 16 November 2026
 
 **Decode-time ban baselines** (`rl.loop::ban`, `harness/target.py::ban_eval`; `results/eval/ban_baselines.md`). MATH-500, 8,192-token cap, paired: banning " Wait"/"Wait" at decoding takes Qwen3.5-0.8B from 6.6% to 22.9% (78% of answers still cut at the cap); adding "Hmm" and "Actually" gives 23.1%. The step-8 editor's best edit reaches 39.5% without a ban, and 40.9% with it (+1.4 ± 1.4). At this cap the editor's edit beats the ban by about 17 points; WSP-Gym's 38.8% for the ban used a 32,768-token cap.
