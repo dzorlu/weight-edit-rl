@@ -41,6 +41,7 @@ TOOLS_TEMPLATE = [
          "max_tokens": {"type": "integer", "description": "generate: at most 8192"},
          "texts": {"type": "array", "items": {"type": "string"}, "description": "teacher_forced: raw texts"},
          "chats": {"type": "array", "description": "teacher_forced: chats, each a list of {role, content} messages"},
+         "texts_file": {"type": "string", "description": "teacher_forced: instead of texts or chats, a path under /work to a JSON file you wrote: a list of raw texts or a list of chats"},
          "enable_thinking": {"type": "boolean", "description": "teacher_forced with chats: use the thinking template"},
          "token_logprobs": {"type": "boolean"}, "topk": {"type": "integer", "description": "at most 50"},
          "hidden_states": {"type": "array", "items": {"type": "integer"}, "description": "layers <<HS>>"},
@@ -59,10 +60,9 @@ def tools_for(a):
 TOOLS = tools_for(QWEN35_08B)
 RETURN_KEYS = ("token_logprobs", "topk", "hidden_states", "mlp_act")
 GRAD_PARAMS = {
-    "objective": {"type": "string", "enum": ["logprob", "loss"], "description": "gradient: 'logprob' = summed log-prob of target_tokens at positions; 'loss' = mean next-token NLL (attributions for lowering it)"},
+    "objective": {"type": "string", "enum": ["logprob", "logit", "loss"], "description": "gradient: 'logprob' or 'logit' of target_tokens summed over positions; 'loss' = minus the mean next-token loss over positions"},
     "target_tokens": {"type": "array", "items": {"type": "string"}, "description": "gradient: single-token strings, e.g. [\" Wait\", \"Wait\"]"},
-    "positions": {"description": "gradient: \"all\" or a list of token positions (position p predicts token p+1)"},
-    "topk_units": {"type": "integer", "description": "gradient: MLP units listed per layer, at most 50"}}
+    "positions": {"description": "gradient: \"all\", a list of token positions used for every text, or one list per text (position p predicts token p+1)"}}
 
 
 def tools_with_grad(tools):
@@ -71,15 +71,39 @@ def tools_with_grad(tools):
     tools = copy.deepcopy(tools)
     for t in tools:
         if t["name"] == "forward":
-            t["description"] += " type 'gradient': one backward pass for diagnosis; returns attributions (activation x gradient) of a target to every layer, MLP unit and attention head. Weights are not changed."
+            t["description"] += " type 'gradient': one backward pass; saves the gradient of a target with respect to every weight tensor of the transformer blocks. The request does not change the weights."
             t["parameters"]["properties"]["type"]["enum"].append("gradient")
             t["parameters"]["properties"].update(GRAD_PARAMS)
+            for k in ("texts", "chats", "texts_file", "enable_thinking"):
+                d = t["parameters"]["properties"][k]
+                d["description"] = d["description"].replace("teacher_forced", "teacher_forced or gradient")
     return tools
 
 
 GRAD_TEXT = """
 
-GRADIENT ATTRIBUTION. The forward tool also accepts type "gradient": one backward pass on up to 8 texts or chats of up to 4,096 tokens each, on the original or edited model. Arguments: "objective": "logprob" with "target_tokens" (single-token strings) and "positions" ("all" or a list; position p predicts token p+1), or "loss" (mean next-token loss); "topk_units" (at most 50). It returns, for that target, the attribution (sum over positions of activation x gradient, the first-order effect of removing a component) of each layer's residual stream, the top MLP units of every layer (down_proj columns), every attention head (full-attention o_proj and linear-attention out_proj blocks) and a score per tensor; the full lists are saved to /work/fwd_<k>/gradient.json. It counts as one forward pass. Gradients are for diagnosis only: no optimizer runs and the weights do not change. Any edit must still be written by hand in Python and saved with save_edit."""
+GRADIENTS. The forward tool also accepts type "gradient": a backward pass on up to 8 texts of up to 8,192 tokens each, on the original or the edited model. It counts as one forward pass. Give "texts", "chats" or "texts_file" as in a teacher-forced pass, and a target: "objective": "logprob" or "logit" with "target_tokens" (single-token strings: the log-probability or the raw logit of those tokens, summed over "positions"), or "objective": "loss" (the target is minus the mean next-token loss over "positions", for example on correct, finished solutions). "positions" is "all", a list of token positions used for every text, or one list per text; position p predicts token p+1. A log-probability that is already close to 0 has almost no gradient; use "logit" there.
+It saves G = d(target)/dW for every tensor of the transformer blocks, summed over the texts: /work/fwd_<k>/grads.safetensors (same names and shapes as the weights, bfloat16; read one tensor with safetensors.safe_open(path, "pt").get_tensor(name).float()); /work/fwd_<k>/rank1.safetensors with "<name>::u" and "<name>::v" for every 2-D tensor, the top singular pair of G, so G is about sigma1 * outer(u, v), with u on the output side of W (for down_proj, o_proj and out_proj a residual-stream direction) and v on its input side; and /work/fwd_<k>/gradient.json with the norms per tensor, sigma1, the rank-1 share and sum(G * W). The reply lists the tensors whose gradient is largest relative to their weights. To first order, W + eta * G raises the target and W - eta * G lowers it. The request never changes the weights; what you do with G is your decision. A grads file takes about 1 GB of disk: delete the ones you no longer need.
+You may use gradients to diagnose and to edit. Diagnosis: which tensors and directions matter for a target (sum(G * W) is attribution patching, Nanda 2023, Syed et al. 2023; per-layer rank-1 factors of example gradients are used by Reddy et al. 2026, "Follow the Gradient"); compare the gradient of a failing text with that of a clean one; decode u through the output layer. Edits: a gradient step, save_edit(name, load(name) + eta * G), which is one step of fine-tuning; several steps, by asking for the gradient of the edited model again; a rank-1 version of the step (the form used by MEND, Mitchell et al. 2022, and ROME, Meng et al. 2022), a masked or projected version, or a hand-built edit that the gradient pointed you to. Choose eta and the tensors by testing: an edit built from gradients is judged by the same paired generations as any other edit, and it must stay in scope. In your final submission say which of these you used."""
+GRAD_REPLACE = (
+    ("Gradients are disabled.", "Autograd is off in this kernel; gradients of the target model come from the forward tool's gradient request (see GRADIENTS)."),
+    ("Not allowed: (a) gradient descent or any other training: no backward passes, autograd or optimizers, and no iterative fitting of weights to a loss; (b) running the model other than through the forward-pass tool: do not implement or simulate the network's computation on any input in the kernel; (c) internet access. Allowed: any analysis of the weights and of forward-pass results, any use of the practice problems, and any direct edit of the weights that you compute and that is in scope.",
+     "Not allowed: (a) running the model other than through the forward-pass tool: do not implement or simulate the network's computation on any input in the kernel; (b) internet access. Allowed: any analysis of the weights and of forward-pass results, any use of the practice problems, gradients from the forward tool's gradient request, and any edit of the weights that is in scope, whether you build it by hand, from gradients, or both."),
+    ("There the entries are chosen by gradient training, which is not allowed here; without it, expect little.",
+     "There the entries are chosen by gradient training; here the gradient request gives you the gradients to choose them."),
+    ("and change them. Any specific failure mechanism", "and change them, by hand or with gradients (see GRADIENTS). Any specific failure mechanism"),
+    ("A forward pass is one of two things, and each counts as one pass:", "A forward pass is one of three things (the third, a gradient request, is described under GRADIENTS), and each counts as one pass:"),
+)
+
+
+def with_grad_text(prompt):
+    """The editor prompt for the gradient arm: statements that forbid gradients are replaced, then the GRADIENTS section is added."""
+    for old, new in GRAD_REPLACE:
+        assert prompt.count(old) == 1, old
+        prompt = prompt.replace(old, new)
+    return prompt + GRAD_TEXT
+
+
 WEB_TOOL = {"name": "web_search", "description": "Search the web (Exa). Returns titles, links and short excerpts. Use it for methods and background, for example interpretability techniques.",
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}
 WEB_READ_TOOL = {"name": "web_read", "description": "Fetch one web page or paper as text. The full text is saved to /library/<name>.md and the first part is returned.",
@@ -735,7 +759,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
     bm = f"{pdir_of('')}/baseline/meta.json"
     known = json.load(open(bm)) if os.path.exists(bm) else None
     n_practice = sum(1 for _ in open(f"{pdir_of('')}/problems.jsonl"))
-    prompt_text = cap_tests(editor_prompt(forward_budget, web, known, arch=arch, task=task, n_practice=n_practice), max_test_answers) + (GRAD_TEXT if grad_tool else "")
+    prompt_text = cap_tests(editor_prompt(forward_budget, web, known, arch=arch, task=task, n_practice=n_practice), max_test_answers)
+    prompt_text = with_grad_text(prompt_text) if grad_tool else prompt_text
     tools = (tools_with_grad(tools_for(arch)) if grad_tool else tools_for(arch)) + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
     lib_dir = f"{d}/_library" if evaluating else f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
     os.makedirs(lib_dir, exist_ok=True)
@@ -789,7 +814,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         ok = {(r["qid"], r["sample"]): r["correct"] for r in rows}
         ap_file = f"{TP['bases_r']}/{tag}/applied_edits.json" if tag else ""
         applied = json.load(open(ap_file)) if ap_file and os.path.exists(ap_file) else None
-        B = {"tag": tag, "prompt": cap_tests(editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice, applied=applied), max_test_answers) + (GRAD_TEXT if grad_tool else ""),
+        _pt = cap_tests(editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice, applied=applied), max_test_answers)
+        B = {"tag": tag, "prompt": with_grad_text(_pt) if grad_tool else _pt,
              "ok": ok, "acc": sum(ok.values()) / len(ok)}
         slog({"event": "reward_base", "base": tag, "answers": len(ok), "accuracy": round(B["acc"], 4),
               "hit_cap": round(sum(r["finish"] == "length" for r in rows) / len(rows), 4), "seconds": round(time.time() - t)})
@@ -901,7 +927,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                     if not grad_tool:
                         try:
                             if json.loads(body).get("type") == "gradient":
-                                too_big = "type must be 'generate' or 'teacher_forced'"
+                                too_big = "type must be 'generate' or 'teacher_forced'"  # this arm has no gradient request
                         except Exception:
                             pass
                     if must_finish():
@@ -952,8 +978,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 w({"turn": turn, "tool": kind, "input": body[:20000], "result": res[:20000], "used_f": used_f, "used_py": used_py, "target_restarts": restarts})
                 if turn % 8 == 0:
                     await runs.commit.aio()  # so a running step can be watched
-                if len(res) > 6000:
-                    res = res[:6000] + "\n[output cut at 6,000 characters]"
+                if len(res) > 10000:
+                    res = res[:10000] + "\n[output cut at 10,000 characters]"
                 extra = ""
                 if must_finish() and not asked_final:
                     asked_final = True
