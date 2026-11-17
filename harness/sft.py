@@ -5,7 +5,7 @@ editor may change (the transformer blocks of the language model). A small grid o
 the `select` split, the split the editor chooses edits on; the best checkpoint is saved as an edit in
 /runs/<run_id>/work/edited, so harness.target.heldout_eval scores it on MATH-500 exactly like an editor's edit.
 
-  modal run --detach -m harness.sft --run-id sft-baseline
+  modal run --detach -m harness.sft::sft --run-id sft-baseline
 """
 import modal
 
@@ -181,5 +181,5 @@ def sft_baseline(run_id: str = "sft-baseline", target: str = DEFAULT_TARGET, hel
 
 
 @app.local_entrypoint()
-def main(run_id: str = "sft-baseline", target: str = DEFAULT_TARGET, heldout_limit: int = 250):
+def sft(run_id: str = "sft-baseline", target: str = DEFAULT_TARGET, heldout_limit: int = 250):
     print("SPAWNED", sft_baseline.spawn(run_id, target, heldout_limit).object_id)
