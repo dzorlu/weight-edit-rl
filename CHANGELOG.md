@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 17 November 2026
 
+**Proposed: SFT route for reading and writing weights** (`results/proposals/next_experiments.md`, experiment 9). Not run.
+
 **Gradient tool and its ablation** (`--grad-tool`; `results/eval/grad_tool_ablation.md`). A forward request type `gradient`: one backward pass on up to 8 texts, returning activation × gradient attributions of a target (log-prob of given tokens, or the loss) per layer, MLP unit and attention head; no optimizer, weights unchanged (smoke test: `harness.target --step gradsmoke`). Ablation with the step-8 editor on the starting model `cur4g16-s8best`, 4 sessions per arm: current tools reward +1.2 / MATH-500 −1.2 per session; with the gradient tool +0.4 / +1.4 (3 of 4 sessions submitted no edit). The tool was used in 1 of 4 sessions (3 calls: one on a mistyped text, one out of memory at ~4,000 tokens). Neither arm finds a gain beyond the loop fix. Two limits found: forward requests take texts as literal strings (the editor cannot reference its saved answers), and texts near 4,096 tokens run out of memory next to the packed vLLM servers.
 
 ## 16 November 2026
