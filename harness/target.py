@@ -999,6 +999,180 @@ class _Core:
                                  "files": files, "mean_token_logprob_first_texts": [round(x, 4) if x is not None else None for x in mean_lp[:16]],
                                  "note": "arrays are right-padded to the longest text; meta.json has token_ids and lengths"}, indent=1)
 
+    # ---- gradient attribution (diagnosis only: one backward pass, no optimizer, weights unchanged)
+    def _gradient(self, req, s):
+        """Attribution of a scalar target to the residual stream, MLP units and attention heads, from one backward pass.
+        target: "loss" (mean next-token NLL of the text; attributions are for lowering it) or the summed log-prob of
+        `target_tokens` at `positions` ("all" or a list of indices into the text's tokens; position p predicts token p+1).
+        Attribution of a component = sum over positions of activation * d(target)/d(activation), the first-order estimate
+        of how the target would change if that component's contribution were removed (sign flipped)."""
+        import json, os, numpy as np, torch
+        from torch.utils.checkpoint import checkpoint
+        which = req.get("model", "original")
+        if which not in ("original", "edited"):
+            return False, "model must be original or edited"
+        if "chats" in req:
+            texts = [self.tok.apply_chat_template(c, tokenize=False, add_generation_prompt=False,
+                                                  enable_thinking=bool(req.get("enable_thinking", False))) for c in req["chats"]]
+        else:
+            texts = [str(t) for t in req.get("texts", [])]
+        if not texts:
+            return False, "no texts or chats given"
+        if len(texts) > 8:
+            return False, "at most 8 texts per gradient request"
+        ids = [self.tok(t, add_special_tokens=False)["input_ids"] for t in texts]
+        if max(len(x) for x in ids) > 4096:
+            return False, f"a text has {max(len(x) for x in ids)} tokens; the gradient limit is 4096 per text"
+        objective = req.get("objective", "logprob" if req.get("target_tokens") else "loss")
+        tgt_ids = []
+        if objective == "logprob":
+            for t in req.get("target_tokens") or []:
+                tt = self.tok(str(t), add_special_tokens=False)["input_ids"]
+                if len(tt) != 1:
+                    return False, f"target token {t!r} is {len(tt)} tokens; each target must be a single token (ids {tt})"
+                tgt_ids.append(tt[0])
+            if not tgt_ids:
+                return False, "objective 'logprob' needs target_tokens (single-token strings)"
+        elif objective != "loss":
+            return False, "objective must be 'logprob' (with target_tokens) or 'loss'"
+        positions = req.get("positions", "all")
+        k_units = max(1, min(50, int(req.get("topk_units", 20) or 20)))
+        if which == "edited" and self._edits(s)[1] is None:
+            return False, "there are no edits; use model 'original' or save an edit first"
+        cfg = self.hf.config.text_config if hasattr(self.hf.config, "text_config") else self.hf.config
+        NL = cfg.num_hidden_layers
+        n_heads, head_dim = cfg.num_attention_heads, getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
+        lin_heads = getattr(cfg, "linear_num_value_heads", None)
+        lin_dim = getattr(cfg, "linear_value_head_dim", None)
+        mods = dict(self.hf.named_modules())
+        def find(suffix):
+            m = [n for n in mods if n.endswith(suffix) and "vis" not in n.lower()]
+            return mods[m[0]] if len(m) == 1 else None
+        watch = {}  # name -> (module, kind) ; kind: 'mlp' input to down_proj, 'attn' input to o_proj, 'lin' input to out_proj, 'resid' layer output
+        for l in range(NL):
+            m = find(f"layers.{l}.mlp.down_proj")
+            if m is not None:
+                watch[f"layers.{l}.mlp.down_proj"] = (m, "mlp", l)
+            m = find(f"layers.{l}.self_attn.o_proj")
+            if m is not None:
+                watch[f"layers.{l}.self_attn.o_proj"] = (m, "attn", l)
+            m = find(f"layers.{l}.linear_attn.out_proj")
+            if m is not None:
+                watch[f"layers.{l}.linear_attn.out_proj"] = (m, "lin", l)
+            m = find(f"layers.{l}")
+            if m is not None:
+                watch[f"layers.{l}"] = (m, "resid", l)
+        emb = self.hf.get_input_embeddings()
+        acc = {n: None for n in watch}   # summed attributions over texts: per unit/head vector, or scalar for resid
+        cap, hooks, oom, targets = {}, [], False, []
+        def grab(name, kind):
+            def h(m, i, o):
+                x = o[0] if (kind == "resid" and isinstance(o, tuple)) else (o if kind == "resid" else i[0])
+                if x.requires_grad:
+                    x.retain_grad()
+                    cap[name] = x
+            return h
+        with self.gpu_lock:  # the shared forward model: one request at a time
+            for p in self.hf.parameters():
+                p.requires_grad_(False)  # gradients flow to activations only; no parameter gradients are ever formed
+            try:
+                self._set_hf(which, s)
+            except Exception as e:
+                self._set_hf("original", s)
+                return False, repr(e)[:600]
+            for n, (m, kind, l) in watch.items():
+                hooks.append(m.register_forward_hook(grab(n, kind)))
+            hooks.append(emb.register_forward_hook(lambda m, i, o: o.requires_grad_(True)))
+            try:
+                with torch.enable_grad():
+                    for i, x_ids in enumerate(ids):
+                        cap.clear()
+                        x = torch.tensor([x_ids]).cuda()
+                        o = self.hf.model(input_ids=x)
+                        h = o.last_hidden_state[0]
+                        n_i = len(x_ids)
+                        if objective == "loss":
+                            pos = list(range(n_i - 1))
+                        else:
+                            pos = list(range(n_i)) if positions == "all" else [int(p) for p in positions if 0 <= int(p) < n_i]
+                        if not pos:
+                            continue
+                        tgt_t = torch.tensor(tgt_ids).cuda() if tgt_ids else None
+                        def chunk_val(hc, nxt):  # hc [c, H]; returns the target's contribution of these positions
+                            logp = torch.log_softmax(self.hf.lm_head(hc).float(), -1)
+                            if objective == "loss":
+                                return -logp.gather(-1, nxt[:, None]).sum()
+                            return logp[:, tgt_t].sum()
+                        total = h.new_zeros((), dtype=torch.float32)
+                        P = torch.tensor(pos).cuda()
+                        for c0 in range(0, len(pos), 256):
+                            pc = P[c0:c0 + 256]
+                            nxt = torch.tensor([x_ids[p + 1] for p in pos[c0:c0 + 256]]).cuda() if objective == "loss" else torch.zeros(1, dtype=torch.long).cuda()
+                            total = total + checkpoint(chunk_val, h[pc], nxt, use_reentrant=False)
+                        if objective == "loss":
+                            total = -total / len(pos)  # gradients point toward lowering the loss: target = -NLL
+                        total.backward()
+                        targets.append(round(float(total.detach()), 4))
+                        for n, xa in cap.items():
+                            if xa.grad is None:
+                                continue
+                            kind = watch[n][1]
+                            prod = (xa.detach().float() * xa.grad.float())[0]  # [T, D]
+                            if kind == "resid":
+                                v = prod.sum().cpu()
+                            elif kind == "mlp":
+                                v = prod.sum(0).cpu()  # per unit
+                            elif kind == "attn":
+                                v = prod.sum(0).view(n_heads, -1).sum(1).cpu() if prod.shape[-1] == n_heads * head_dim else prod.sum(0).cpu()
+                            else:
+                                D = prod.shape[-1]
+                                hh = lin_heads if lin_heads and D % lin_heads == 0 else None
+                                v = prod.sum(0).view(hh, -1).sum(1).cpu() if hh else prod.sum(0).cpu()
+                            acc[n] = v if acc[n] is None else acc[n] + v
+                        cap.clear()
+                        del o, h, total
+                        self.hf.zero_grad(set_to_none=True)
+            except torch.cuda.OutOfMemoryError:
+                oom = True
+            finally:
+                for hk in hooks:
+                    hk.remove()
+                cap.clear()
+                self.hf.zero_grad(set_to_none=True)
+                self._set_hf("original", s)
+                torch.cuda.empty_cache()
+        if oom:
+            return False, "the gradient pass ran out of GPU memory (it does not count). Use fewer or shorter texts (e.g. 1-2 texts of <= 2,000 tokens)."
+        resid = {int(n.split(".")[1]): round(float(v), 4) for n, v in acc.items() if v is not None and watch[n][1] == "resid"}
+        units, heads, tensor_score = {}, {}, {}
+        for n, v in acc.items():
+            if v is None or watch[n][1] == "resid":
+                continue
+            kind, l = watch[n][1], watch[n][2]
+            tname = f"model.language_model.{n}.weight" if not n.startswith("model.") else n + ".weight"
+            tensor_score[tname] = round(float(v.abs().sum()), 4)
+            if kind == "mlp":
+                top = torch.topk(v.abs(), min(k_units, v.numel())).indices.tolist()
+                units[l] = [[int(j), round(float(v[j]), 4)] for j in top]
+            else:
+                heads[f"L{l} {'o_proj' if kind == 'attn' else 'out_proj'}"] = [round(float(x), 4) for x in v.tolist()]
+        k = s.k + 1
+        d = f"/work/fwd_{k}"
+        os.makedirs(s.real(d), exist_ok=True)
+        full = {"objective": objective, "target_tokens": req.get("target_tokens"), "positions": positions, "model": which, "texts": len(ids),
+                "target_values": targets, "residual_attribution_by_layer": resid, "mlp_top_units_by_layer": units,
+                "heads_by_layer": heads, "tensor_scores": tensor_score}
+        json.dump(full, open(s.real(f"{d}/gradient.json"), "w"))
+        s.k = k
+        top_t = sorted(tensor_score.items(), key=lambda kv: -kv[1])[:10]
+        return True, json.dumps({"request": k, "type": "gradient", "model": which, "objective": objective, "texts": len(ids),
+                                 "target_values": targets, "residual_attribution_by_layer": resid,
+                                 "top_tensors_by_total_abs_attribution": top_t,
+                                 "mlp_top_units_first_layers_shown": {l: units[l][:5] for l in sorted(units)[-6:]},
+                                 "file": f"{d}/gradient.json",
+                                 "note": "attribution = sum over positions of activation x gradient of the target (first-order effect of removing that component). "
+                                         "Positive: the component raises the target. Full per-unit and per-head lists are in the file. Weights were not changed."}, indent=1)
+
     def _forward(self, s, req_json):
         import json, traceback
         try:
@@ -1010,6 +1184,8 @@ class _Core:
                 return self._generate(req, s)
             if req.get("type") == "teacher_forced":
                 return self._teacher_forced(req, s)
+            if req.get("type") == "gradient":
+                return self._gradient(req, s)
             return False, "type must be 'generate' or 'teacher_forced'"
         except Exception:
             return False, "the request failed with an internal error (it does not count):\n" + traceback.format_exc()[-1500:]
@@ -1327,6 +1503,28 @@ def paper_edit(run_id: str = "control-paper-edit"):
 
 
 @app.function(image=offline, volumes={"/runs": runs}, timeout=40 * 60)
+def grad_smoke():
+    """Tiny test of the gradient request: finite attributions, weights unchanged (teacher-forced log-probs identical before and after)."""
+    import json, math
+    t = Target()
+    loop_text = "Let me compute 12*13. 12*13 = 156. Wait, let me check. 12*13 = 156. Wait, let me check again. 12*13 = 156. Wait,"
+    tf = {"type": "teacher_forced", "model": "original", "texts": [loop_text], "return": {"token_logprobs": True}}
+    ok0, r0 = t.forward.remote(json.dumps(tf))
+    ok, r = t.forward.remote(json.dumps({"type": "gradient", "model": "original", "texts": [loop_text], "objective": "logprob",
+                                         "target_tokens": [" Wait"], "positions": "all", "topk_units": 5}))
+    print("GRAD", ok, r[:3000])
+    okl, rl_ = t.forward.remote(json.dumps({"type": "gradient", "model": "original", "texts": [loop_text], "objective": "loss"}))
+    print("GRAD-LOSS", okl, rl_[:800])
+    ok1, r1 = t.forward.remote(json.dumps(tf))
+    a, b = json.loads(r0)["mean_token_logprob_first_texts"], json.loads(r1)["mean_token_logprob_first_texts"]
+    print("weights unchanged:", a == b, a, b)
+    if ok:
+        j = json.loads(r)
+        vals = list(j["residual_attribution_by_layer"].values())
+        print("finite:", all(math.isfinite(v) for v in vals), "layers", len(vals))
+
+
+@app.function(image=offline, volumes={"/runs": runs}, timeout=40 * 60)
 def smoke_target():
     """Cheap test of Target: sandbox, an edit, a paired generation, a teacher-forced pass."""
     import json
@@ -1362,6 +1560,8 @@ def main(step: str = "prep", run_id: str = "", target: str = DEFAULT_TARGET):
         print(json.dumps(show_arch.remote(target), indent=1))
     elif step == "smoke":
         smoke_target.remote()
+    elif step == "gradsmoke":
+        grad_smoke.remote()
     elif step == "heldout":
         print("SPAWNED", heldout_eval.spawn(run_id).object_id)  # spawn: a blocking call is cancelled when the local client exits
     elif step == "control":

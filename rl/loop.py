@@ -58,6 +58,28 @@ def tools_for(a):
 
 TOOLS = tools_for(QWEN35_08B)
 RETURN_KEYS = ("token_logprobs", "topk", "hidden_states", "mlp_act")
+GRAD_PARAMS = {
+    "objective": {"type": "string", "enum": ["logprob", "loss"], "description": "gradient: 'logprob' = summed log-prob of target_tokens at positions; 'loss' = mean next-token NLL (attributions for lowering it)"},
+    "target_tokens": {"type": "array", "items": {"type": "string"}, "description": "gradient: single-token strings, e.g. [\" Wait\", \"Wait\"]"},
+    "positions": {"description": "gradient: \"all\" or a list of token positions (position p predicts token p+1)"},
+    "topk_units": {"type": "integer", "description": "gradient: MLP units listed per layer, at most 50"}}
+
+
+def tools_with_grad(tools):
+    """The tool list with the forward tool's 'gradient' request type added."""
+    import copy
+    tools = copy.deepcopy(tools)
+    for t in tools:
+        if t["name"] == "forward":
+            t["description"] += " type 'gradient': one backward pass for diagnosis; returns attributions (activation x gradient) of a target to every layer, MLP unit and attention head. Weights are not changed."
+            t["parameters"]["properties"]["type"]["enum"].append("gradient")
+            t["parameters"]["properties"].update(GRAD_PARAMS)
+    return tools
+
+
+GRAD_TEXT = """
+
+GRADIENT ATTRIBUTION. The forward tool also accepts type "gradient": one backward pass on up to 8 texts or chats of up to 4,096 tokens each, on the original or edited model. Arguments: "objective": "logprob" with "target_tokens" (single-token strings) and "positions" ("all" or a list; position p predicts token p+1), or "loss" (mean next-token loss); "topk_units" (at most 50). It returns, for that target, the attribution (sum over positions of activation x gradient, the first-order effect of removing a component) of each layer's residual stream, the top MLP units of every layer (down_proj columns), every attention head (full-attention o_proj and linear-attention out_proj blocks) and a score per tensor; the full lists are saved to /work/fwd_<k>/gradient.json. It counts as one forward pass. Gradients are for diagnosis only: no optimizer runs and the weights do not change. Any edit must still be written by hand in Python and saved with save_edit."""
 WEB_TOOL = {"name": "web_search", "description": "Search the web (Exa). Returns titles, links and short excerpts. Use it for methods and background, for example interpretability techniques.",
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}
 WEB_READ_TOOL = {"name": "web_read", "description": "Fetch one web page or paper as text. The full text is saved to /library/<name>.md and the first part is returned.",
@@ -662,8 +684,9 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                  rollouts_per_gpu: int = 1, rebase_every: int = 0, update_check: bool = True, start_base: str = "", force_rewards: str = "",
                  mode: str = "rl", eval_dataset: str = "math500", eval_limit: int = 0, eval_parallel: int = 4,
                  advantage: str = "grpo", adv_scale: float = 0.10, target: str = DEFAULT_TARGET, task: str = "math",
-                 max_test_answers: int = 0, step_offset: int = 0):
-    """target: a key of harness.target.TARGETS; the prompt, tools, caches and starting models are that target's.
+                 max_test_answers: int = 0, step_offset: int = 0, grad_tool: bool = False):
+    """grad_tool: offer the forward tool's 'gradient' request type (attribution from one backward pass; diagnosis only).
+    target: a key of harness.target.TARGETS; the prompt, tools, caches and starting models are that target's.
     task: a key of harness.target.TASKS; the practice folder, reward set and prompt wording are that task's.
     start_base: begin with this starting model (a tag made by rebasing) instead of the downloaded one.
     mode "eval" (rl.loop::evaluate): one group of rollouts from `start_from` (a state or sampler path; "" is the untrained
@@ -712,8 +735,8 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
     bm = f"{pdir_of('')}/baseline/meta.json"
     known = json.load(open(bm)) if os.path.exists(bm) else None
     n_practice = sum(1 for _ in open(f"{pdir_of('')}/problems.jsonl"))
-    prompt_text = cap_tests(editor_prompt(forward_budget, web, known, arch=arch, task=task, n_practice=n_practice), max_test_answers)
-    tools = tools_for(arch) + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
+    prompt_text = cap_tests(editor_prompt(forward_budget, web, known, arch=arch, task=task, n_practice=n_practice), max_test_answers) + (GRAD_TEXT if grad_tool else "")
+    tools = (tools_with_grad(tools_for(arch)) if grad_tool else tools_for(arch)) + ([WEB_TOOL, WEB_READ_TOOL] if web else [])
     lib_dir = f"{d}/_library" if evaluating else f"/runs/rl/_library/{library or exp}"  # the shared library: papers and notes that persist across rollouts and steps
     os.makedirs(lib_dir, exist_ok=True)
     if not os.path.exists(f"{lib_dir}/INDEX.md"):
@@ -737,7 +760,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                "reward_items": len(items), "reward_n": reward_n, "effort": effort, "lr": lr, "advantage": advantage, "adv_scale": adv_scale, "web": web, "library": lib_dir, "rollouts_per_gpu": rollouts_per_gpu,
                "rebase_every": rebase_every, "start_base": start_base, "update_check": update_check, "start_from": start_from,
                "baseline_given": bool(known), "mode": mode, "eval_dataset": eval_dataset if evaluating else None, "eval_limit": eval_limit,
-               "max_test_answers": max_test_answers, "step_offset": step_offset,
+               "max_test_answers": max_test_answers, "step_offset": step_offset, "grad_tool": grad_tool,
                "prompt": prompt_text}, open(f"{d}/config.json" if not step_offset else f"{d}/config_from_step{step_offset + 1}.json", "w"), indent=1)
 
     def slog(rec):
@@ -766,7 +789,7 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
         ok = {(r["qid"], r["sample"]): r["correct"] for r in rows}
         ap_file = f"{TP['bases_r']}/{tag}/applied_edits.json" if tag else ""
         applied = json.load(open(ap_file)) if ap_file and os.path.exists(ap_file) else None
-        B = {"tag": tag, "prompt": cap_tests(editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice, applied=applied), max_test_answers),
+        B = {"tag": tag, "prompt": cap_tests(editor_prompt(forward_budget, web, kn, rebased=bool(tag), arch=arch, task=task, n_practice=n_practice, applied=applied), max_test_answers) + (GRAD_TEXT if grad_tool else ""),
              "ok": ok, "acc": sum(ok.values()) / len(ok)}
         slog({"event": "reward_base", "base": tag, "answers": len(ok), "accuracy": round(B["acc"], 4),
               "hit_cap": round(sum(r["finish"] == "length" for r in rows) / len(rows), 4), "seconds": round(time.time() - t)})
@@ -875,6 +898,12 @@ async def rl_run(exp: str, steps: int = 2, group_size: int = 4, forward_budget: 
                 elif kind == "forward":
                     body = forward_request(args)
                     too_big = test_too_big(body, max_test_answers)
+                    if not grad_tool:
+                        try:
+                            if json.loads(body).get("type") == "gradient":
+                                too_big = "type must be 'generate' or 'teacher_forced'"
+                        except Exception:
+                            pass
                     if must_finish():
                         res = "[no forward passes left]"
                     elif too_big:
@@ -1263,7 +1292,7 @@ async def eval_score(name: str, edits: str, dataset: str = "math500", base_tag: 
 @app.local_entrypoint()
 def evaluate(name: str, checkpoint: str = "", base: str = "original", n: int = 8, dataset: str = "math500", limit: int = 0,
              forward_budget: int = 32, rollout_minutes: int = 120, rollouts_per_gpu: int = 2, reward_items: int = 128, parallel: int = 4, edits: str = "",
-             target: str = DEFAULT_TARGET, task: str = "math"):
+             target: str = DEFAULT_TARGET, task: str = "math", grad_tool: bool = False):
     """Evaluate an editor checkpoint: n rollouts with no training update (same prompt and settings as RL rollouts; no notes,
     no web), then every submitted edit scored on `dataset` against starting model `base`. Outputs in /runs/eval/<name>/.
     checkpoint: a Tinker state or sampler path (tinker://...), "" for the untrained editor (a fresh LoRA).
@@ -1285,7 +1314,8 @@ def evaluate(name: str, checkpoint: str = "", base: str = "original", n: int = 8
     else:
         call = rl_run.spawn(name, steps=1, group_size=n, forward_budget=forward_budget, rollout_minutes=rollout_minutes, hours=rollout_minutes / 60 + 0.5,
                             reward_items=reward_items, start_from=checkpoint, web=False, rollouts_per_gpu=rollouts_per_gpu, update_check=False,
-                            start_base=tag, mode="eval", eval_dataset=dataset, eval_limit=limit, eval_parallel=parallel, target=target, task=task)
+                            start_base=tag, mode="eval", eval_dataset=dataset, eval_limit=limit, eval_parallel=parallel, target=target, task=task,
+                            grad_tool=grad_tool)
     print("SPAWNED", call.object_id, "-> /runs/eval/" + name + "/summary.json")
 
 
