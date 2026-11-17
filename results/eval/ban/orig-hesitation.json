@@ -1,0 +1,48 @@
+{
+ "label": "orig-hesitation",
+ "base": "",
+ "ban": {
+  " Wait": 13428,
+  "Wait": 13784,
+  " Hmm": 85152,
+  "Hmm": 77264,
+  " Actually": 32645
+ },
+ "dataset": "math500",
+ "problems": 500,
+ "n_per_problem": 2,
+ "cap": 8192,
+ "seconds": 1228,
+ "banned": {
+  "n": 1000,
+  "accuracy_pct": 23.1,
+  "correct": 231,
+  "graded": 1000,
+  "mean_tokens": 7351,
+  "cut_at_max_tokens_pct": 77.5,
+  "no_boxed_answer_pct": 68.5,
+  "by_source": {
+   "math500": "231/1000"
+  }
+ },
+ "original": {
+  "n": 1000,
+  "accuracy_pct": 6.6,
+  "correct": 66,
+  "graded": 1000,
+  "mean_tokens": 7962,
+  "cut_at_max_tokens_pct": 95.2,
+  "no_boxed_answer_pct": 81.0,
+  "by_source": {
+   "math500": "66/1000"
+  }
+ },
+ "paired_vs_original": {
+  "diff_pp": 16.5,
+  "se_pp": 1.42,
+  "questions": 500,
+  "wrong_to_right": 168,
+  "right_to_wrong": 3
+ },
+ "banned_token_in_output": 0
+}

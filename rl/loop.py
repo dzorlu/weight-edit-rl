@@ -18,7 +18,7 @@ Cost bounds: each rollout holds one L40S (or half of one with --rollouts-per-gpu
 Outputs: /runs/rl/<exp>/ on the runs volume (steps.jsonl, one transcript per rollout).
 """
 import modal
-from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PackedTarget, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval
+from harness.target import app, runs, base, base_src, SRC, heldout_vol, Target, PackedTarget, PY_BUDGET, GEN_CAP, last_boxed, heldout_eval, ban_eval
 from harness.target import weights, offline, _Core, base_dirs, heldout_cache, heldout_rows, start_vllm, stop_proc, EVAL_SETS, prep_eval_set
 from harness.target import TARGETS, DEFAULT_TARGET, target_arch, target_paths, target_dir, prep, summarize, TASKS, _check_task
 from harness.prompts import make_prompt, make_guide, tensor_names_text, layer_ranges, QWEN35_08B
@@ -1567,3 +1567,13 @@ def find(substr: str):
 def keep(state_path: str, name: str):
     """Keep a checkpoint: re-save a training state and its sampler weights without an expiry date."""
     print(resave_checkpoint.remote(state_path, name))
+
+
+@app.local_entrypoint()
+def ban(configs: str, dataset: str = "math500", limit: int = 0):
+    """Decode-time ban baselines. configs: JSON list of {"label", "base", "ban": [token strings]}; one GPU, one config at a time.
+    Example: --configs '[{"label": "orig-wait", "base": "", "ban": [" Wait", "Wait"]}]'"""
+    for r in ban_eval.remote(configs, dataset, 2, limit):
+        b, p = r["banned"], r["paired_vs_original"]
+        print(r["label"], "acc", b["accuracy_pct"], "cut", b["cut_at_max_tokens_pct"], "tokens", b["mean_tokens"],
+              "vs original", p["diff_pp"], "+/-", p["se_pp"], "w2r", p["wrong_to_right"], "r2w", p["right_to_wrong"])

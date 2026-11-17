@@ -1,0 +1,45 @@
+{
+ "label": "orig-wait",
+ "base": "",
+ "ban": {
+  " Wait": 13428,
+  "Wait": 13784
+ },
+ "dataset": "math500",
+ "problems": 500,
+ "n_per_problem": 2,
+ "cap": 8192,
+ "seconds": 1243,
+ "banned": {
+  "n": 1000,
+  "accuracy_pct": 22.9,
+  "correct": 229,
+  "graded": 1000,
+  "mean_tokens": 7367,
+  "cut_at_max_tokens_pct": 77.8,
+  "no_boxed_answer_pct": 69.1,
+  "by_source": {
+   "math500": "229/1000"
+  }
+ },
+ "original": {
+  "n": 1000,
+  "accuracy_pct": 6.6,
+  "correct": 66,
+  "graded": 1000,
+  "mean_tokens": 7962,
+  "cut_at_max_tokens_pct": 95.2,
+  "no_boxed_answer_pct": 81.0,
+  "by_source": {
+   "math500": "66/1000"
+  }
+ },
+ "paired_vs_original": {
+  "diff_pp": 16.3,
+  "se_pp": 1.41,
+  "questions": 500,
+  "wrong_to_right": 166,
+  "right_to_wrong": 3
+ },
+ "banned_token_in_output": 0
+}

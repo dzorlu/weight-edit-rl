@@ -417,8 +417,9 @@ def prep_eval_set(dataset: str):
     return sum(1 for _ in open(spec["file"]))
 
 
-def heldout_rows(port, name, items, n, grade=grade_math):
-    """Answers to evaluation problems, as heldout_eval generates them (seeded by problem and sample)."""
+def heldout_rows(port, name, items, n, grade=grade_math, logit_bias=None):
+    """Answers to evaluation problems, as heldout_eval generates them (seeded by problem and sample).
+    logit_bias: {token id: bias}; -100 bans a token at decoding (thinking included), with no weight change."""
     import concurrent.futures as cf, zlib
     jobs = [(it, s) for it in items for s in range(n)]
 
@@ -427,7 +428,8 @@ def heldout_rows(port, name, items, n, grade=grade_math):
         seed = zlib.crc32(f"heldout|{it['qid']}|{s}".encode()) & 0x7FFFFFFF
         try:
             r = chat(port, name, [{"role": "user", "content": it["problem"] + "\n\nPut your final answer in \\boxed{}."}], GEN_CAP, seed=seed,
-                     temperature=0.6, top_p=0.95, top_k=20, presence_penalty=1.5, chat_template_kwargs={"enable_thinking": True})
+                     temperature=0.6, top_p=0.95, top_k=20, presence_penalty=1.5, chat_template_kwargs={"enable_thinking": True},
+                     **({"logit_bias": {str(k): v for k, v in logit_bias.items()}} if logit_bias else {}))
             ch = r["choices"][0]
             rs = ch["message"].get("reasoning_content") or ch["message"].get("reasoning") or ""
             text = (("<think>" + rs + "</think>") if rs else "") + (ch["message"].get("content") or "")
@@ -439,6 +441,57 @@ def heldout_rows(port, name, items, n, grade=grade_math):
 
     with cf.ThreadPoolExecutor(256) as ex:
         return list(ex.map(one, jobs))
+
+
+def ban_ids(tok, words):
+    """Token ids for each string in `words` (each must be one token)."""
+    out = {}
+    for w in words:
+        ids = tok.encode(w, add_special_tokens=False)
+        if len(ids) != 1:
+            raise ValueError(f"{w!r} is not a single token: {ids}")
+        out[w] = ids[0]
+    return out
+
+
+@app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=6 * 3600, memory=32768)
+def ban_eval(configs_json: str, dataset: str = "math500", n: int = 2, limit: int = 0, target: str = DEFAULT_TARGET):
+    """Decode-time ban baselines: for each config {"label", "base", "ban": [token strings]}, generate the evaluation set
+    with those tokens banned (logit bias -100) on starting model `base` ("" = the target as downloaded), one config at a
+    time on one GPU, and compare with the target's cached original answers (same seeds). Results: /runs/eval/ban/<label>.json."""
+    import json, os, time
+    from transformers import AutoTokenizer
+    runs.reload()
+    spec = EVAL_SETS[dataset]
+    items = [json.loads(l) for l in open(spec["file"])]
+    if limit:
+        items = items[:limit]
+    want = {(it["qid"], s) for it in items for s in range(n)}
+    orig = [r for r in map(json.loads, open(heldout_cache("", dataset, target))) if (r["qid"], r["sample"]) in want]
+    results = []
+    for cfg in json.loads(configs_json):
+        mdir = base_dirs(cfg.get("base", ""), target)[0]
+        tok = AutoTokenizer.from_pretrained(mdir)
+        ids = ban_ids(tok, cfg["ban"])
+        print(cfg["label"], "banned token ids", ids)
+        proc = start_vllm(mdir, "banned", 8001, 0.90, GEN_CAP + 3000)
+        t = time.time()
+        rows = heldout_rows(8001, "banned", items, n, spec["grade"], logit_bias={i: -100 for i in ids.values()})
+        stop_proc(proc); time.sleep(10)
+        out = {"label": cfg["label"], "base": cfg.get("base", ""), "ban": ids, "dataset": dataset, "problems": len(items), "n_per_problem": n,
+               "cap": GEN_CAP, "seconds": round(time.time() - t), "banned": summarize(rows, GEN_CAP), "original": summarize(orig, GEN_CAP),
+               "paired_vs_original": paired_stats(orig, rows),
+               "banned_token_in_output": sum(any(w in r["text"] for w in ids) for r in rows)}
+        os.makedirs("/runs/eval/ban", exist_ok=True)
+        with open(f"/runs/eval/ban/{cfg['label']}.json", "w") as f:
+            json.dump(out, f, indent=1)
+        with open(f"/runs/eval/ban/{cfg['label']}.jsonl", "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        runs.commit()
+        print("BAN", json.dumps(out))
+        results.append(out)
+    return results
 
 
 # ----------------------------------------------------------------------------- prep
