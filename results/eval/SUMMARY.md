@@ -10,6 +10,8 @@ Qwen3.5-0.8B as downloaded (7.8% on these problems). Gain on MATH-500, first 250
 | Trained editor, rollouts only | 3 rollouts, best by reward | 6e16 | 2.5× | +27.3 |
 | Trained editor, training + rollouts | 128 training rollouts + 3 rollouts | 1.7e18 | 70× | +27.3 |
 
+**Claim.** On this model and this failure, a trained editor's targeted edits match or slightly beat a small fine-tune (+27.3 against +23.6, within noise), and its best edits beat it clearly (40–43% accuracy against 31.4%; 31–48% of answers still cut at the token cap against 69%). This does not show that editing beats fine-tuning in general: the fine-tune was small (122 answers, one run), and the editor costs 2.5× the compute, or 70× with its training counted.
+
 - **Fine-tuning, no editor.** Qwen is trained on 122 of its own correct answers (3 learning rates × 144 steps × 4 answers). No editor is involved. The best of 9 checkpoints, chosen on practice problems, is scored.
 - **Trained editor, rollouts only.** The editor after 8 RL steps edits Qwen's weights in 3 separate rollouts. The edit with the highest reward-set score is kept. The cost of training the editor is not counted.
 - **Trained editor, training + rollouts.** The same 3 rollouts, plus the 128 rollouts on Qwen that trained the editor.
