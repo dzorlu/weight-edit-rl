@@ -23,4 +23,4 @@ Arm A's edits: zeroed "Wait" units in 1–8 tensors (r0, r1, r3) and a small edi
 
 Reading: arm C is ahead by 14 points on MATH-500 and 16 on the reward set, with 4 sessions per arm. The two sessions that used gradients are the two best of the eight. The two arm-C sessions that did not use gradients (mean +15.8) are also above arm A (mean +7.7), so part of the gap is session-to-session variation, not the gradient request: the same editor on the same starting model scored +23.8 (4 sessions, 120-minute cap) on 16 November without gradients. Both gradient sessions still fix the same failure, the missing `</think>`.
 
-The fine-tuning baseline (`harness/sft.py`, no editor) is reported in `sft_baseline.md` when it finishes.
+Fine-tuning baseline, no editor (`sft_baseline.md`): +23.6 ± 2.2 on the same 250 problems.
