@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 18 November 2026
 
+**Launched: untrained editor with and without the gradient request** (`/runs/eval/untr8-armA`, `/runs/eval/untr8-armC`). 8 rollouts per arm, untrained editor (fresh LoRA), Qwen3.5-0.8B as downloaded, 120-minute cap, current harness, MATH-500 first 250 problems × 2: the same setup as the trained editor's arms. The trained editor already has a fix it reaches without gradients; this tests whether an editor without that habit uses the gradient request more and gains from it.
+
 **Untrained against trained editor at equal compute** (`results/eval/SUMMARY.md`). Saved rollouts rescored on the first 250 MATH-500 problems: untrained editor (7 rollouts) mean +12.8, best of 3 by reward +15.7, largest +18.2; step-8 editor without the gradient request (16 rollouts) mean +17.9, best of 3 +27.1, largest +35.2. No new runs.
 
 **Gradient ablation rerun, 8 sessions per arm, 120-minute cap** (`results/eval/grad_tool_armC.md`). MATH-500 gain: current tools mean +20.9 (SE 4.4), with weight gradients mean +17.4 (SE 4.1); reward set +22.8 against +18.1. Two of 8 gradient-arm sessions called the gradient request: one used the gradient's singular vectors to get the `</think>` direction for a hand-built amplification (+19.6), one took a plain gradient step with η = 1e-7 on 165 tensors (−0.6, no change in cut-off answers). Pooled with the first run (12 sessions per arm): +16.5 against +18.9; gradient-arm sessions with a gradient call +18.8, without +19.0. The gradient request does not change the editor's result; the first run's 14-point gap was variation between sessions. No test failed on a mistyped problem id after the split-range fix.
