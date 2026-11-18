@@ -1,4 +1,22 @@
-# Evaluation results (snapshot 16 November 2026, 19:00)
+# Evaluation results
+
+## Fine-tuning vs the trained editor, by compute (18 November 2026)
+
+Qwen3.5-0.8B as downloaded (7.8% on these problems). Gain on MATH-500, first 250 problems × 2 answers. Compute is on Qwen only.
+
+| Route | What is counted | Qwen FLOPs | Relative | MATH-500 gain |
+|---|---|---|---|---|
+| Fine-tuning, no editor | forward + backward passes of training | 2.4e16 | 1× | +23.6 |
+| Trained editor, rollouts only | 3 rollouts, best by reward | 6e16 | 2.5× | +27.3 |
+| Trained editor, training + rollouts | 128 training rollouts + 3 rollouts | 1.7e18 | 70× | +27.3 |
+
+- **Fine-tuning, no editor.** Qwen is trained on 122 of its own correct answers (3 learning rates × 144 steps × 4 answers). No editor is involved. The best of 9 checkpoints, chosen on practice problems, is scored.
+- **Trained editor, rollouts only.** The editor after 8 RL steps edits Qwen's weights in 3 separate rollouts. The edit with the highest reward-set score is kept. The cost of training the editor is not counted.
+- **Trained editor, training + rollouts.** The same 3 rollouts, plus the 128 rollouts on Qwen that trained the editor.
+
+Not counted: for fine-tuning, generating the 2,048 answers the training set was picked from (2.4e16) and scoring the 9 checkpoints (1.4e16); for the editor, the editor model's own compute. FLOPs are estimates (1.5 GFLOPs per generated token, 4.5 per trained token), good to about ±30%. The +27.3 is the average over every way of drawing 3 of the 12 rollouts without the gradient request (`grad_tool_armC.md`). Fine-tuning: `sft_baseline.md`.
+
+# Earlier results (snapshot 16 November 2026, 19:00)
 
 All scores are on held-out sets that the editor never sees and that were never used to choose an edit.
 Gains are in percentage points over the unedited model. Small samples: this is a proof of concept, not a measured difference.
