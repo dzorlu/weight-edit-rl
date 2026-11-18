@@ -38,6 +38,7 @@ TARGETS = {
 DEFAULT_TARGET = "qwen3.5-0.8b"
 TARGET = TARGETS[DEFAULT_TARGET]["hf"]
 GEN_CAP = 8192
+TEXT_CAP = 9216  # tokens per text of a teacher-forced or gradient request: an answer cut at GEN_CAP plus its prompt
 FORWARD_BUDGET = 50
 PY_BUDGET = 300
 SRC = ("harness", "editors", "rl")  # local packages every container needs
@@ -678,6 +679,7 @@ class _Core:
         self.commit_lock = threading.Lock()
         self.orig_lock = threading.Lock()
         self.orig = None
+        self.splits = json.load(open(f"{self.pdir}/splits.json")) if os.path.exists(f"{self.pdir}/splits.json") else {}
         self.practice = {}
         for line in open(f"{self.pdir}/problems.jsonl"):
             r = json.loads(line)
@@ -827,9 +829,25 @@ class _Core:
         if not (1 <= max_tokens <= GEN_CAP):
             return False, f"max_tokens must be between 1 and {GEN_CAP}"
         items = []
-        for pid in req.get("problems", []) or []:
+        pids = []
+        if req.get("split"):
+            name = str(req["split"])
+            if name not in self.splits:
+                return False, f"unknown split {name!r}; the splits are {sorted(self.splits)}"
+            try:
+                a = int(req.get("start", 0) or 0)
+                c = int(req["count"]) if req.get("count") is not None else len(self.splits[name]) - a
+            except Exception:
+                return False, "start and count must be integers"
+            if a < 0 or c < 1 or a + c > len(self.splits[name]):
+                return False, f"start {a} + count {c} is outside split {name!r}, which has {len(self.splits[name])} problems"
+            pids = list(self.splits[name][a:a + c])
+        probs = req.get("problems", []) or []
+        if isinstance(probs, str):
+            return False, "problems must be a list of practice ids; to name a part of a split use \"split\", \"start\" and \"count\""
+        for pid in pids + list(probs):
             if pid not in self.practice:
-                return False, f"unknown practice id {pid!r}"
+                return False, f"unknown practice id {pid!r}; to avoid typing ids, name a part of a split with \"split\", \"start\" and \"count\""
             p = self.practice[pid]
             items.append({"qid": pid, "source": p["source"], "answer": p["answer"],
                           "prompt": p["problem"] + "\n\nPut your final answer in \\boxed{}."})
@@ -889,8 +907,8 @@ class _Core:
         ids = [self.tok(t, add_special_tokens=False)["input_ids"] for t in texts]
         L = max(len(x) for x in ids)
         tot = sum(len(x) for x in ids)
-        if L > 8192:
-            return False, f"a text has {L} tokens; the limit is 8192 per text"
+        if L > TEXT_CAP:
+            return False, f"a text has {L} tokens; the limit is {TEXT_CAP} per text"
         if tot > 262144:
             return False, f"{tot} tokens in total; the limit is 262144"
         hs_layers = [int(x) for x in ret.get("hidden_states", []) or []]
@@ -1023,9 +1041,17 @@ class _Core:
                 except Exception as e:
                     return None, f"a chat in {p} could not be formatted: {e!r}"[:400]
             return None, f"{p} must hold a JSON list of strings or a JSON list of chats, not a mix"
-        if "chats" in req:
-            return [tmpl(c) for c in req["chats"]], None
-        texts = [str(t) for t in req.get("texts", [])]
+        chats = req.get("chats")
+        if isinstance(chats, str):
+            return None, "chats must be a list of chats; to read them from a file use \"texts_file\": \"/work/<name>.json\""
+        if chats:
+            try:
+                return [tmpl(c) for c in chats], None
+            except Exception as e:
+                return None, f"a chat could not be formatted (each chat is a list of {{role, content}} messages starting with a user message): {e!r}"[:400]
+        if isinstance(req.get("texts"), str):
+            return None, "texts must be a list of strings; to read them from a file use \"texts_file\": \"/work/<name>.json\""
+        texts = [str(t) for t in req.get("texts") or []]
         if not texts:
             return None, "no texts, chats or texts_file given"
         return texts, None
@@ -1048,8 +1074,8 @@ class _Core:
         if len(texts) > 8:
             return False, "at most 8 texts per gradient request"
         ids = [self.tok(t, add_special_tokens=False)["input_ids"] for t in texts]
-        if max(len(x) for x in ids) > 8192:
-            return False, f"a text has {max(len(x) for x in ids)} tokens; the limit is 8192 per text"
+        if max(len(x) for x in ids) > TEXT_CAP:
+            return False, f"a text has {max(len(x) for x in ids)} tokens; the limit is {TEXT_CAP} per text"
         if min(len(x) for x in ids) < 2:
             return False, "every text needs at least 2 tokens"
         objective = req.get("objective", "logprob" if req.get("target_tokens") else "loss")
@@ -1525,7 +1551,7 @@ def paper_edit(run_id: str = "control-paper-edit"):
 @app.function(image=offline, volumes={"/runs": runs}, timeout=60 * 60)
 def grad_smoke():
     """End-to-end test of the gradient request on the packed target (the GPU share the RL sessions get): the model's own
-    cut-off answers read from a file in /work, 8,000-token texts, a gradient step saved as an edit, weights unchanged."""
+    cut-off answers with their prompts read from a file in /work (up to 9,216 tokens), a test named by split range, a gradient step saved as an edit, weights unchanged."""
     import json
     t = PackedTarget(gid="gradsmoke")
     rid = "r0"
@@ -1536,8 +1562,8 @@ rows = [json.loads(l) for l in open('/practice/baseline/original.jsonl')]
 cut = [r for r in rows if r['finish'] == 'length'][:8]
 done = [r for r in rows if r['correct']][:2]
 trunc = lambda r, n: tok.decode(tok.encode(r['prompt'] + '\n' + r['text']).ids[:n])
-json.dump([trunc(cut[0], 8000)], open('/work/one.json', 'w'))
-json.dump([trunc(r, 8000) for r in cut], open('/work/eight.json', 'w'))
+json.dump([trunc(cut[0], 9216)], open('/work/one.json', 'w'))
+json.dump([trunc(r, 9216) for r in cut], open('/work/eight.json', 'w'))
 json.dump([trunc(r, 8000) for r in done], open('/work/done.json', 'w'))
 print(len(rows), len(cut), len(done), [len(tok.encode(x).ids) for x in json.load(open('/work/eight.json'))])
 """))
@@ -1572,6 +1598,13 @@ r1 = safetensors.safe_open('/work/fwd_{k}/rank1.safetensors', 'pt'); print(r1.ge
     a, b = json.loads(r0)["mean_token_logprob_first_texts"], json.loads(r1)["mean_token_logprob_first_texts"]
     print("original weights unchanged:", a == b, a, b)
     print("bad file:", fwd({"type": "gradient", "model": "original", "texts_file": "/etc/passwd", "objective": "loss"}))
+    okg, rg = fwd({"type": "generate", "model": "original", "split": "select", "start": 4, "count": 4, "n": 2})
+    print("GEN by split", okg, rg[:500])
+    print("bad split range:", fwd({"type": "generate", "model": "original", "split": "select", "start": 250, "count": 10}))
+    print("bad id:", fwd({"type": "generate", "model": "original", "problems": ["math/algebra/999999"]}))
+    print("chats as path:", fwd({"type": "teacher_forced", "model": "original", "chats": "/work/x.json"}))
+    print("empty chats with texts:", fwd({"type": "teacher_forced", "model": "original", "chats": [], "texts": ["test text"], "return": {}})[0])
+    print("chat without user:", fwd({"type": "teacher_forced", "model": "original", "chats": [[{"role": "assistant", "content": "hi"}]]}))
 
 
 @app.function(image=offline, volumes={"/runs": runs}, timeout=40 * 60)

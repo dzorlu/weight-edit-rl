@@ -36,6 +36,9 @@ TOOLS_TEMPLATE = [
          "type": {"type": "string", "enum": ["generate", "teacher_forced"]},
          "model": {"type": "string", "enum": ["original", "edited", "both"]},
          "problems": {"type": "array", "items": {"type": "string"}, "description": "generate: practice ids"},
+         "split": {"type": "string", "description": "generate: instead of problems, the name of a split in /practice/splits.json"},
+         "start": {"type": "integer", "description": "generate with split: index of the first problem (default 0)"},
+         "count": {"type": "integer", "description": "generate with split: number of problems"},
          "prompts": {"type": "array", "items": {"type": "string"}, "description": "generate: your own user messages, used verbatim"},
          "n": {"type": "integer", "description": "generate: samples per item"},
          "max_tokens": {"type": "integer", "description": "generate: at most 8192"},
@@ -82,7 +85,7 @@ def tools_with_grad(tools):
 
 GRAD_TEXT = """
 
-GRADIENTS. The forward tool also accepts type "gradient": a backward pass on up to 8 texts of up to 8,192 tokens each, on the original or the edited model. It counts as one forward pass. Give "texts", "chats" or "texts_file" as in a teacher-forced pass, and a target: "objective": "logprob" or "logit" with "target_tokens" (single-token strings: the log-probability or the raw logit of those tokens, summed over "positions"), or "objective": "loss" (the target is minus the mean next-token loss over "positions", for example on correct, finished solutions). "positions" is "all", a list of token positions used for every text, or one list per text; position p predicts token p+1. A log-probability that is already close to 0 has almost no gradient; use "logit" there.
+GRADIENTS. The forward tool also accepts type "gradient": a backward pass on up to 8 texts of up to 9,216 tokens each, on the original or the edited model. It counts as one forward pass. Give "texts", "chats" or "texts_file" as in a teacher-forced pass, and a target: "objective": "logprob" or "logit" with "target_tokens" (single-token strings: the log-probability or the raw logit of those tokens, summed over "positions"), or "objective": "loss" (the target is minus the mean next-token loss over "positions", for example on correct, finished solutions). "positions" is "all", a list of token positions used for every text, or one list per text; position p predicts token p+1. A log-probability that is already close to 0 has almost no gradient; use "logit" there.
 It saves G = d(target)/dW for every tensor of the transformer blocks, summed over the texts: /work/fwd_<k>/grads.safetensors (same names and shapes as the weights, bfloat16; read one tensor with safetensors.safe_open(path, "pt").get_tensor(name).float()); /work/fwd_<k>/rank1.safetensors with "<name>::u" and "<name>::v" for every 2-D tensor, the top singular pair of G, so G is about sigma1 * outer(u, v), with u on the output side of W (for down_proj, o_proj and out_proj a residual-stream direction) and v on its input side; and /work/fwd_<k>/gradient.json with the norms per tensor, sigma1, the rank-1 share and sum(G * W). The reply lists the tensors whose gradient is largest relative to their weights. To first order, W + eta * G raises the target and W - eta * G lowers it. The request never changes the weights; what you do with G is your decision. A grads file takes about 1 GB of disk: delete the ones you no longer need.
 You may use gradients to diagnose and to edit. Diagnosis: which tensors and directions matter for a target (sum(G * W) is attribution patching, Nanda 2023, Syed et al. 2023; per-layer rank-1 factors of example gradients are used by Reddy et al. 2026, "Follow the Gradient"); compare the gradient of a failing text with that of a clean one; decode u through the output layer. Edits: a gradient step, save_edit(name, load(name) + eta * G), which is one step of fine-tuning; several steps, by asking for the gradient of the edited model again; a rank-1 version of the step (the form used by MEND, Mitchell et al. 2022, and ROME, Meng et al. 2022), a masked or projected version, or a hand-built edit that the gradient pointed you to. Choose eta and the tensors by testing: an edit built from gradients is judged by the same paired generations as any other edit, and it must stay in scope. In your final submission say which of these you used."""
 GRAD_REPLACE = (
@@ -210,6 +213,11 @@ def test_too_big(body, cap):
     if not isinstance(req, dict) or req.get("type") != "generate":
         return ""
     n_items = len(req.get("problems") or []) + len(req.get("prompts") or [])
+    if req.get("split"):
+        try:
+            n_items += int(req["count"]) if req.get("count") is not None else 256
+        except Exception:
+            pass
     try:
         n = int(req.get("n", 1))
     except Exception:
