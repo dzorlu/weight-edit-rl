@@ -2,6 +2,10 @@
 
 Changes to the prompt, the tools and the RL setup, newest first, with the reason for each.
 
+## 18 November 2026
+
+**Gradient ablation rerun, 8 sessions per arm, 120-minute cap** (`results/eval/grad_tool_armC.md`). MATH-500 gain: current tools mean +20.9 (SE 4.4), with weight gradients mean +17.4 (SE 4.1); reward set +22.8 against +18.1. Two of 8 gradient-arm sessions called the gradient request: one used the gradient's singular vectors to get the `</think>` direction for a hand-built amplification (+19.6), one took a plain gradient step with η = 1e-7 on 165 tensors (−0.6, no change in cut-off answers). Pooled with the first run (12 sessions per arm): +16.5 against +18.9; gradient-arm sessions with a gradient call +18.8, without +19.0. The gradient request does not change the editor's result; the first run's 14-point gap was variation between sessions. No test failed on a mistyped problem id after the split-range fix.
+
 ## 17 November 2026
 
 **Harness fixes from the arm A / arm C trajectories, both arms** (`harness/target.py`, `rl/loop.py`, `harness/prompts.py`). (1) A generation request can name a part of a split, `"split": "select", "start": 0, "count": 128`, instead of listing ids: 11 tests in 7 of 8 sessions failed on a mistyped practice id. (2) Teacher-forced and gradient requests take texts of up to 9,216 tokens (was 8,192): an answer cut at 8,192 tokens plus its prompt is 8,251–8,560 tokens and was refused in 3 sessions. (3) `chats` given as a file path, an empty `chats` next to `texts`, and a chat without a user message return a one-line message instead of a stack trace. Smoke test rerun (`harness.target --step gradsmoke`): gradients of eight full cut-off answers (8,257–8,551 tokens) fit on the packed GPU share. Rerun of the ablation: `gradC8-armA` and `gradC8-armC`, 8 sessions each, 120-minute cap.
