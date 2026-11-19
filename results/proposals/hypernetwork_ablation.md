@@ -36,3 +36,18 @@ Data generation 1.8e17 FLOPs (about $6); training on about 1,000 answers × 5 pa
 1. Training target: Qwen's own correct answers (default) or KL to a teacher's token distribution (Doc-to-LoRA's objective; teacher candidates: Qwen with "Wait" banned at decoding, 22.9%; the best edited model, about 40%).
 2. Writer size, and whether to match compute to the fine-tune or to the RL run.
 3. Simple pooling first, or the Perceiver from the start.
+
+## Independent review (18 November 2026)
+
+A reviewer read this plan, the results files, `harness/sft.py` and the texts of Doc-to-LoRA, Text-to-LoRA, Transformer-Squared and AdapterBench. Verified points are from those files; the rest is the reviewer's judgement.
+
+1. Conditioning has nothing it must learn: every successful edit is one fix applied to all problems, and the problem text is also in Qwen's prompt (the setting where AdapterBench finds matched-minus-junk near zero: +0.029, −0.001). The per-layer head biases alone are a fixed rank-8 LoRA. A "no drop" result under the junk-input control cannot separate "nothing to learn" from "too little data". Fix: a fixed LoRA of the same shape trained on identical data and steps (AdapterBench's "matched minus static").
+2. Data is 3–4 orders of magnitude short: Doc-to-LoRA 3.2M contexts, 101M triplets, 100K steps, 309M writer; Text-to-LoRA 479 tasks × 128 descriptions, 5–55M writers; this plan about 1,000 answers (nearer 750 after the 6,000-token limit in `sft.py`, which kept 122 of 162). Judgement: an 80M writer will fit a constant; larger writers add nothing.
+3. Selection bias: only about 7% of answers finish, so the writer never sees activations of problems Qwen fails; the fine-tune trained this way leaves 69% of answers cut at the cap against 35% for the best edit.
+4. Train/test mismatch: teacher-forced loss on finished answers against free generation to 8,192 tokens. Fix: choose checkpoints by the cut-at-cap rate on generated answers.
+5. Comparison: editor rows are best of 3 with tests inside the rollout; compare with single-rollout means (+16.6 untrained, +20.9 trained); gaps under about 8 points are unresolved at these sample sizes.
+6. Evaluation: 250 distinct LoRAs need per-request adapters or batched hooks in HF generate; the scoring cost is a lower bound.
+7. `sft.py` reuse: generated answers are not saved to disk; each sequence runs alone; a failed `gradient_checkpointing_enable` is not fatal.
+8. H2 as specified is not sound: about 92% of samples would get −1, and minimising their log-likelihood is unbounded. Transformer-Squared (Eq. 1) adds a KL term to the original model, picks λ on validation, stops early, trains only singular-value scales, and uses a −0.1 reward in one setting "for training stability". Fix: r ∈ {0, 1} with a KL-to-original term.
+
+Suggested first experiment (about 6 GPU-hours, about $11): on the same saved data, a fixed rank-8 LoRA against a mean-pool writer against the junk-input writer, gated on teacher-forced loss over held-out finished answers; generate only if the matched writer beats both controls. Cut: H2, the medium and large writers, the Perceiver, the GSM8K and NuminaMath checks. A planted-fault family (known rank-1 damage; the writer reads the damaged model; KL on short texts to the undamaged one) would force conditioning; about 3–5 GPU-hours, a new build.
