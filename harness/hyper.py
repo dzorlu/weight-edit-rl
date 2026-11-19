@@ -387,8 +387,15 @@ def score_hyper(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset:
             rows[i] = {"qid": it["qid"], "sample": k, "text": text, "extracted": ext, "correct": bool(ok), "tokens": len(g),
                        "finish": "stop" if done else "length"}
         print(f"scored {min(b0 + batch, len(order))}/{len(order)} in {round(time.time() - t0)}s")
-    if shards > 1:
-        return rows
+    if shards > 1:   # a network-blocked function cannot return megabytes of answers: they go to the volume, score_all merges them
+        pd = f"/runs/hyper/{run_id or '_original'}/scores/_parts"
+        os.makedirs(pd, exist_ok=True)
+        pf = f"{pd}/{tag}_s{shard}of{shards}.jsonl"
+        with open(pf, "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        runs.commit()
+        return {"part": pf, "answers": len(rows), "seconds": round(time.time() - t0)}
     res = _summary(rows, run_id, ckpt, mode if cond != "none" else "none", cond, split or dataset, len(items), n, max_new, time.time() - t0)
     name = tag or f"{split or dataset}_{cond}" + (f"_e{ckpt}" if cond != "none" else "") + (f"_limit{limit}" if limit else "")
     d = f"/runs/hyper/{run_id or '_original'}"
@@ -415,11 +422,12 @@ def score_all(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset: s
     """score_hyper split over `shards` GPUs; the merged answers and summary are written to /runs/hyper/<run_id>/scores/."""
     import json, os, time
     t0 = time.time()
-    parts = list(score_hyper.starmap([(run_id, ckpt, cond, dataset, limit, n, split, batch, max_new, target, "", k, shards) for k in range(shards)]))
-    rows = [r for p in parts for r in p]
+    name = f"{split or dataset}_{cond}" + (f"_e{ckpt}" if cond != "none" else "") + (f"_limit{limit}" if limit else "") + (f"_n{n}" if n != 2 else "") + (f"_cap{max_new}" if max_new != GEN_CAP else "")
+    parts = list(score_hyper.starmap([(run_id, ckpt, cond, dataset, limit, n, split, batch, max_new, target, name, k, shards) for k in range(shards)]))
+    runs.reload()
+    rows = [json.loads(l) for p in parts for l in open(p["part"])]
     mode = "none" if cond == "none" else ("static" if run_id.startswith("static") else "hyper")
     res = _summary(rows, run_id, ckpt, mode, cond, split or dataset, limit, n, max_new, time.time() - t0)
-    name = f"{split or dataset}_{cond}" + (f"_e{ckpt}" if cond != "none" else "") + (f"_limit{limit}" if limit else "")
     d = f"/runs/hyper/{run_id or '_original'}"
     os.makedirs(f"{d}/scores", exist_ok=True)
     json.dump(res, open(f"{d}/scores/{name}.json", "w"), indent=1)
@@ -444,8 +452,11 @@ def train(run_id: str, mode: str = "hyper", epochs: int = 3, lr: float = 1e-4, t
 
 @app.local_entrypoint()
 def score(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset: str = "math500", limit: int = 250, n: int = 2, split: str = "",
-          max_new: int = GEN_CAP, target: str = DEFAULT_TARGET, tag: str = ""):
-    print("SPAWNED", score_all.spawn(run_id, ckpt, cond, dataset, limit, n, split, max_new, target).object_id)
+          max_new: int = GEN_CAP, target: str = DEFAULT_TARGET, shards: int = 3, wait: bool = False):
+    if wait:
+        print(score_all.remote(run_id, ckpt, cond, dataset, limit, n, split, max_new, target, shards))
+    else:
+        print("SPAWNED", score_all.spawn(run_id, ckpt, cond, dataset, limit, n, split, max_new, target, shards).object_id)
 
 
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, block_network=True,
