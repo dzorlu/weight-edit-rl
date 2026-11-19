@@ -305,7 +305,8 @@ def train_hyper(run_id: str, mode: str = "hyper", epochs: int = 3, lr: float = 1
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, block_network=True,
               timeout=10 * 60 * 60, memory=65536, cpu=8)
 def score_hyper(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset: str = "math500", limit: int = 250, n: int = 2,
-                split: str = "", batch: int = 48, max_new: int = GEN_CAP, target: str = DEFAULT_TARGET, tag: str = ""):
+                split: str = "", batch: int = 16, max_new: int = GEN_CAP, target: str = DEFAULT_TARGET, tag: str = "",
+                shard: int = 0, shards: int = 1):
     """Generate answers with the hypernetwork's LoRA for each question and grade them.
     cond: "matched" (the question's own activations), "junk" (another question's activations), "none" (no LoRA: the target
     as downloaded, through the same generation code). split: score practice problems of that split instead of `dataset`."""
@@ -332,11 +333,15 @@ def score_hyper(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset:
     if limit:
         items = items[:limit]
     jobs = [(it, k) for it in items for k in range(n)]
+    jobs = [j for i, j in enumerate(jobs) if i % shards == shard]   # one shard of the answers; score_all merges the shards
     q_ids = {it["qid"]: tok(_prefix(tok, _prompt(it["problem"])), add_special_tokens=False)["input_ids"] for it in items}
     AB = {}
     if cond != "none":
         with torch.no_grad():
+            need = {j[0]["qid"] for j in jobs}
             for j, it in enumerate(items):
+                if it["qid"] not in need:
+                    continue
                 src = items[(j + len(items) // 2) % len(items)] if cond == "junk" else it   # junk: a question half the set away
                 X = None if mode == "static" else acts([q_ids[src["qid"]]])[0]
                 A, B = hyper(X)
@@ -366,7 +371,7 @@ def score_hyper(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset:
         if cond != "none":
             lora["A"] = torch.stack([AB[jobs[i][0]["qid"]][0] for i in idx]).cuda()
             lora["B"] = torch.stack([AB[jobs[i][0]["qid"]][1] for i in idx]).cuda()
-        torch.manual_seed(1000 + b0)
+        torch.manual_seed(1000 + b0 + 100003 * shard)
         with torch.no_grad():
             out = hf.generate(input_ids=x.cuda(), attention_mask=am.cuda(), do_sample=True, temperature=SAMPLING["temperature"],
                               top_p=SAMPLING["top_p"], top_k=SAMPLING["top_k"], max_new_tokens=max_new, eos_token_id=eos, pad_token_id=pad,
@@ -382,12 +387,39 @@ def score_hyper(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset:
             rows[i] = {"qid": it["qid"], "sample": k, "text": text, "extracted": ext, "correct": bool(ok), "tokens": len(g),
                        "finish": "stop" if done else "length"}
         print(f"scored {min(b0 + batch, len(order))}/{len(order)} in {round(time.time() - t0)}s")
-    acc = 100 * sum(r["correct"] for r in rows) / len(rows)
-    res = {"run_id": run_id, "ckpt": ckpt, "mode": mode if cond != "none" else "none", "cond": cond, "dataset": split or dataset,
-           "problems": len(items), "n": n, "max_new": max_new, "accuracy_pct": round(acc, 2),
-           "cut_at_cap_pct": round(100 * sum(r["finish"] == "length" for r in rows) / len(rows), 2),
-           "mean_tokens": round(sum(r["tokens"] for r in rows) / len(rows)), "seconds": round(time.time() - t0)}
+    if shards > 1:
+        return rows
+    res = _summary(rows, run_id, ckpt, mode if cond != "none" else "none", cond, split or dataset, len(items), n, max_new, time.time() - t0)
     name = tag or f"{split or dataset}_{cond}" + (f"_e{ckpt}" if cond != "none" else "") + (f"_limit{limit}" if limit else "")
+    d = f"/runs/hyper/{run_id or '_original'}"
+    os.makedirs(f"{d}/scores", exist_ok=True)
+    json.dump(res, open(f"{d}/scores/{name}.json", "w"), indent=1)
+    with open(f"{d}/scores/{name}.jsonl", "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    runs.commit()
+    print("SCORE", json.dumps(res))
+    return res
+
+
+def _summary(rows, run_id, ckpt, mode, cond, dataset, problems, n, max_new, seconds):
+    return {"run_id": run_id, "ckpt": ckpt, "mode": mode, "cond": cond, "dataset": dataset, "problems": problems, "n": n, "max_new": max_new,
+            "answers": len(rows), "accuracy_pct": round(100 * sum(r["correct"] for r in rows) / len(rows), 2),
+            "cut_at_cap_pct": round(100 * sum(r["finish"] == "length" for r in rows) / len(rows), 2),
+            "mean_tokens": round(sum(r["tokens"] for r in rows) / len(rows)), "seconds": round(seconds)}
+
+
+@app.function(image=offline, volumes={"/runs": runs}, timeout=11 * 60 * 60, memory=8192)
+def score_all(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset: str = "math500", limit: int = 250, n: int = 2,
+              split: str = "", max_new: int = GEN_CAP, target: str = DEFAULT_TARGET, shards: int = 3, batch: int = 16):
+    """score_hyper split over `shards` GPUs; the merged answers and summary are written to /runs/hyper/<run_id>/scores/."""
+    import json, os, time
+    t0 = time.time()
+    parts = list(score_hyper.starmap([(run_id, ckpt, cond, dataset, limit, n, split, batch, max_new, target, "", k, shards) for k in range(shards)]))
+    rows = [r for p in parts for r in p]
+    mode = "none" if cond == "none" else ("static" if run_id.startswith("static") else "hyper")
+    res = _summary(rows, run_id, ckpt, mode, cond, split or dataset, limit, n, max_new, time.time() - t0)
+    name = f"{split or dataset}_{cond}" + (f"_e{ckpt}" if cond != "none" else "") + (f"_limit{limit}" if limit else "")
     d = f"/runs/hyper/{run_id or '_original'}"
     os.makedirs(f"{d}/scores", exist_ok=True)
     json.dump(res, open(f"{d}/scores/{name}.json", "w"), indent=1)
@@ -413,7 +445,7 @@ def train(run_id: str, mode: str = "hyper", epochs: int = 3, lr: float = 1e-4, t
 @app.local_entrypoint()
 def score(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset: str = "math500", limit: int = 250, n: int = 2, split: str = "",
           max_new: int = GEN_CAP, target: str = DEFAULT_TARGET, tag: str = ""):
-    print("SPAWNED", score_hyper.spawn(run_id, ckpt, cond, dataset, limit, n, split, 48, max_new, target, tag).object_id)
+    print("SPAWNED", score_all.spawn(run_id, ckpt, cond, dataset, limit, n, split, max_new, target).object_id)
 
 
 @app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, block_network=True,
@@ -459,7 +491,7 @@ def hyper_smoke(target: str = DEFAULT_TARGET):
     torch.save({"state": hyper.state_dict(), "mode": "hyper", "dims": dims, "rank": RANK, "width": WIDTH}, "/runs/hyper/_smoke/ckpt_e1.pt")
     runs.commit()
     for cond in ("none", "matched", "junk"):
-        r = score_hyper.local("_smoke", 1, cond, "math500", 8, 2, "", 16, 512, target, f"smoke_{cond}")
+        r = score_hyper.local("_smoke", 1, cond, "math500", 8, 2, "", 16, 512, target, f"smoke_{cond}", 0, 1)
         print("GEN", cond, json.dumps(r))
 
 
