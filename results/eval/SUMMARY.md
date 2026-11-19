@@ -1,35 +1,40 @@
 # Evaluation results
 
-## Fine-tuning vs the trained editor, by compute (18 November 2026)
+## Fine-tuning vs the editor, by compute (18 November 2026)
 
-Qwen3.5-0.8B as downloaded (7.8% on these problems). Gain on MATH-500, first 250 problems × 2 answers. Compute is on Qwen only.
+Qwen3.5-0.8B as downloaded (7.8% on these problems). Gain on MATH-500, first 250 problems × 2 answers. Compute is on Qwen only. Editor rows: 8 rollouts each on the same harness (120-minute cap, no gradient request); "3 rollouts, best by reward" averages over every way of drawing 3 of the 8 and keeping the one with the highest reward-set score.
 
 | Route | What is counted | Qwen FLOPs | Relative | MATH-500 gain |
 |---|---|---|---|---|
 | Fine-tuning, no editor | forward + backward passes of training | 2.4e16 | 1× | +23.6 |
-| Untrained editor, rollouts only | 3 rollouts, best by reward | 6e16 | 2.5× | +15.7 |
-| Trained editor, rollouts only | 3 rollouts, best by reward | 6e16 | 2.5× | +27.3 |
-| Trained editor, training + rollouts | 128 training rollouts + 3 rollouts | 1.7e18 | 70× | +27.3 |
+| Untrained editor, rollouts only | 3 rollouts, best by reward | 6e16 | 2.5× | +26.3 |
+| Trained editor, rollouts only | 3 rollouts, best by reward | 6e16 | 2.5× | +30.5 |
+| Trained editor, training + rollouts | 128 training rollouts + 3 rollouts | 1.7e18 | 70× | +30.5 |
 
-**Claim.** On this model and this failure, a trained editor's targeted edits match or slightly beat a small fine-tune (+27.3 against +23.6, within noise), and its best edits beat it clearly (40–43% accuracy against 31.4%; 31–48% of answers still cut at the token cap against 69%). This does not show that editing beats fine-tuning in general: the fine-tune was small (122 answers, one run), and the editor costs 2.5× the compute, or 70× with its training counted.
+**Claim.** On this model and this failure, an editor that picks the best of 3 rollouts matches or beats a small fine-tune, with or without RL training: untrained +26.3, trained +30.5, fine-tune +23.6. RL training adds about 4 points (mean per rollout +20.9 against +16.6, SE about 4 each, so within noise at 8 rollouts per editor). The best edits reach 40–43% accuracy against 31.4% for the fine-tuned model. This does not show that editing beats fine-tuning in general: the fine-tune was small (122 answers, one run), and the editor costs 2.5× the compute, or 70× with its training counted.
 
 - **Fine-tuning, no editor.** Qwen is trained on 122 of its own correct answers (3 learning rates × 144 steps × 4 answers). No editor is involved. The best of 9 checkpoints, chosen on practice problems, is scored.
-- **Untrained editor, rollouts only.** The same, with the editor before any RL step (7 rollouts from 16 November, rescored on these 250 problems).
-- **Trained editor, rollouts only.** The editor after 8 RL steps edits Qwen's weights in 3 separate rollouts. The edit with the highest reward-set score is kept. The cost of training the editor is not counted.
+- **Untrained editor, rollouts only.** The editor before any RL step (a fresh LoRA on Inkling 2 Small) edits Qwen's weights in 3 separate rollouts. The edit with the highest reward-set score is kept.
+- **Trained editor, rollouts only.** The same with the editor after 8 RL steps. The cost of training the editor is not counted.
 - **Trained editor, training + rollouts.** The same 3 rollouts, plus the 128 rollouts on Qwen that trained the editor.
 
-Not counted: for fine-tuning, generating the 2,048 answers the training set was picked from (2.4e16) and scoring the 9 checkpoints (1.4e16); for the editor, the editor model's own compute. FLOPs are estimates (1.5 GFLOPs per generated token, 4.5 per trained token), good to about ±30%. The +27.3 is the average over every way of drawing 3 of the 12 rollouts without the gradient request (`grad_tool_armC.md`). Fine-tuning: `sft_baseline.md`.
+Not counted: for fine-tuning, generating the 2,048 answers the training set was picked from (2.4e16) and scoring the 9 checkpoints (1.4e16); for the editor, the editor model's own compute. FLOPs are estimates (1.5 GFLOPs per generated token, 4.5 per trained token), good to about ±30%. Fine-tuning: `sft_baseline.md`.
 
-### Untrained against trained editor at equal compute
+### Untrained against trained editor, with and without the gradient request
 
-Every rollout edits Qwen3.5-0.8B as downloaded; gains on the same 250 problems. "Best of k" averages over every way of drawing k rollouts and keeping the one with the highest reward-set score.
+Every rollout edits Qwen3.5-0.8B as downloaded; 8 rollouts per cell, 120-minute cap, same harness (`/runs/eval/untr8-armA`, `untr8-armC`, `gradC8-armA`, `gradC8-armC`).
 
-| Editor | Rollouts | Mean gain | Best of 2 | Best of 3 | Largest gain |
-|---|---|---|---|---|---|
-| Untrained | 7 | +12.8 | +15.2 | +15.7 | +18.2 |
-| Trained (step 8), no gradient request | 16 | +17.9 | +24.2 | +27.1 | +35.2 |
+| Editor | Tools | Mean gain | Best of 2 | Best of 3 | Largest gain | Rollouts that called the gradient request |
+|---|---|---|---|---|---|---|
+| Untrained | current | +16.6 (SE 4.0) | +23.2 | +26.3 | +31.8 | – |
+| Untrained | + weight gradients | +18.5 (SE 3.0) | +23.5 | +26.2 | +34.0 | 6 of 8 |
+| Trained (step 8) | current | +20.9 (SE 4.4) | +28.0 | +30.5 | +35.2 | – |
+| Trained (step 8) | + weight gradients | +17.4 (SE 4.1) | +24.4 | +28.0 | +34.8 | 2 of 8 |
 
-The trained editor's lead grows from 5 points per rollout to 11 points at best of 3: its rollouts vary more, and 7 of 16 gain at least +22, above every untrained rollout. Per rollout (reward, gain): untrained (20.3, 16.2), (15.2, 13.2), (16.4, 15.8), (15.6, 10.2), (19.1, 16.8), (14.1, 18.2), (−1.9, −0.8); trained 16 November (24.6, 18.6), (31.2, 28.6), (18.0, 19.2), (24.2, 22.0); trained 17–18 November in `grad_tool_armC.md`. Limits: 7 untrained rollouts; one more lost its edit to the save bug and 4 more were never scored on MATH-500 (their reward-set gains, 14.1–25.0, are in the same range); the untrained rollouts ran with a 90-minute cap and before the harness fixes of 17 November, the trained ones with 90 or 120 minutes.
+- The gradient request changes neither editor's result (untrained +18.5 against +16.6; trained +17.4 against +20.9).
+- The untrained editor uses it three times as often as the trained one (6 of 8 rollouts against 2 of 8). Its best rollout (+34.0) adds `0.0065·outer(u, v)`, the top singular pair of the gradient of the `</think>` logit at 53 positions, to all 48 writer matrices. One rollout used the `loss` target as well.
+- RL training: +4.3 on the mean and +4.2 at best of 3 with current tools; with the gradient request the trained editor is not ahead. An earlier comparison in this file used 7 untrained rollouts from 16 November (90-minute cap, before the harness fixes of 17 November: mean +12.8, best of 3 +15.7); on the same harness the untrained editor is 4–10 points higher than that.
+- Per rollout (reward, gain). Untrained, current tools: (31.6, 31.8), (29.7, 28.2), (10.2, 7.0), (0.8, 1.2), (5.1, 4.4), (19.5, 19.6), (20.7, 22.2), (21.5, 18.2). Untrained, with gradients: (20.7, 21.0), (21.1, 20.0), (25.4, 23.8), (12.9, 9.0), (12.5, 8.4), (32.0, 34.0), (16.4, 12.8), (16.8, 19.2). Trained: `grad_tool_armC.md`.
 
 # Earlier results (snapshot 16 November 2026, 19:00)
 
