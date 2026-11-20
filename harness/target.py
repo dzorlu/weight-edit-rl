@@ -418,7 +418,7 @@ def prep_eval_set(dataset: str):
     return sum(1 for _ in open(spec["file"]))
 
 
-def heldout_rows(port, name, items, n, grade=grade_math, logit_bias=None):
+def heldout_rows(port, name, items, n, grade=grade_math, logit_bias=None, cap=GEN_CAP, timeout=3000):
     """Answers to evaluation problems, as heldout_eval generates them (seeded by problem and sample).
     logit_bias: {token id: bias}; -100 bans a token at decoding (thinking included), with no weight change."""
     import concurrent.futures as cf, zlib
@@ -428,7 +428,7 @@ def heldout_rows(port, name, items, n, grade=grade_math, logit_bias=None):
         it, s = job
         seed = zlib.crc32(f"heldout|{it['qid']}|{s}".encode()) & 0x7FFFFFFF
         try:
-            r = chat(port, name, [{"role": "user", "content": it["problem"] + "\n\nPut your final answer in \\boxed{}."}], GEN_CAP, seed=seed,
+            r = chat(port, name, [{"role": "user", "content": it["problem"] + "\n\nPut your final answer in \\boxed{}."}], cap, seed=seed, timeout=timeout,
                      temperature=0.6, top_p=0.95, top_k=20, presence_penalty=1.5, chat_template_kwargs={"enable_thinking": True},
                      **({"logit_bias": {str(k): v for k, v in logit_bias.items()}} if logit_bias else {}))
             ch = r["choices"][0]
@@ -493,6 +493,59 @@ def ban_eval(configs_json: str, dataset: str = "math500", n: int = 2, limit: int
         print("BAN", json.dumps(out))
         results.append(out)
     return results
+
+
+@app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs, "/heldout": heldout_vol}, timeout=8 * 3600, memory=32768)
+def cap_eval(cap: int = 32768, dataset: str = "math500", n: int = 2, limit: int = 250, target: str = DEFAULT_TARGET, base: str = ""):
+    """A starting model on an evaluation set with a larger output cap (same prompts, sampling and seeds as heldout_eval, so
+    each answer continues the cached answer of the 8,192-token run). Results: /runs/eval/cap/<target>[-<base>]_cap<cap>.json."""
+    import json, os, time
+    runs.reload()
+    spec = EVAL_SETS[dataset]
+    items = [json.loads(l) for l in open(spec["file"])]
+    if limit:
+        items = items[:limit]
+    mdir = base_dirs(base, target)[0]
+    proc = start_vllm(mdir, "capped", 8001, 0.90, cap + 3000)
+    t = time.time()
+    try:
+        rows = heldout_rows(8001, "capped", items, n, spec["grade"], cap=cap, timeout=7 * 3600)
+    finally:
+        stop_proc(proc)
+    out = {"target": target, "base": base, "dataset": dataset, "problems": len(items), "n_per_problem": n, "cap": cap,
+           "seconds": round(time.time() - t), "tokens": sum(r["tokens"] for r in rows), **summarize(rows, cap),
+           "errors": sum(r["finish"] == "error" for r in rows)}
+    for b in (8192, 16384, 32768, 65536):   # what a smaller cap would have given: answers that finished within b tokens
+        if b <= cap:
+            fin = [r for r in rows if r["finish"] == "stop" and r["tokens"] <= b]
+            out[f"finished_within_{b}_pct"] = round(100 * len(fin) / len(rows), 2)
+            out[f"correct_within_{b}_pct"] = round(100 * sum(bool(r["correct"]) for r in fin) / len(rows), 2)
+    fin = [r for r in rows if r["finish"] == "stop"]
+    out["correct_among_finished_pct"] = round(100 * sum(bool(r["correct"]) for r in fin) / len(fin), 2) if fin else None
+    cache = heldout_cache(base, dataset, target)
+    if os.path.exists(cache):
+        want = {(r["qid"], r["sample"]) for r in rows}
+        orig = [r for r in map(json.loads, open(cache)) if (r["qid"], r["sample"]) in want]
+        if len(orig) == len(rows):
+            out["at_8192"] = summarize(orig, GEN_CAP)
+            out["paired_vs_8192"] = paired_stats(orig, rows)
+    name = target + (f"-{base}" if base else "") + f"_cap{cap}" + (f"_limit{limit}" if limit != 250 else "")
+    os.makedirs("/runs/eval/cap", exist_ok=True)
+    json.dump(out, open(f"/runs/eval/cap/{name}.json", "w"), indent=1)
+    with open(f"/runs/eval/cap/{name}.jsonl", "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    runs.commit()
+    print("CAP", json.dumps(out))
+    return out
+
+
+@app.local_entrypoint()
+def cap(cap: int = 32768, target: str = DEFAULT_TARGET, base: str = "", limit: int = 250, n: int = 2, wait: bool = False):
+    if wait:
+        print(str(cap_eval.remote(cap, "math500", n, limit, target, base))[:3000])
+    else:
+        print("SPAWNED", cap_eval.spawn(cap, "math500", n, limit, target, base).object_id)
 
 
 # ----------------------------------------------------------------------------- prep
