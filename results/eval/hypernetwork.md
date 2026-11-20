@@ -1,4 +1,4 @@
-# Hypernetwork that writes a LoRA per question (snapshot 2026-11-19)
+# Hypernetwork that writes a LoRA per question (snapshot 2026-11-20)
 
 Code: `harness/hyper.py`. Plan and independent review: `results/proposals/hypernetwork_ablation.md`. Runs: `/runs/hyper/hyper1`, `/runs/hyper/static1`, `/runs/hyper/_original`.
 
@@ -92,6 +92,24 @@ Gains over Qwen through the same path: fixed LoRA +6.0, hypernetwork +6.8 (stand
 - Both gain far less than fine-tuning on the same kind of data (+6 to +7 against +23.6). They differ from that baseline in several ways at once: a rank-8 update on `down_proj` only against 279 full tensors, 835 answers against 122, 591 steps at one learning rate with no grid and no checkpoint selection on generated answers. Which of these accounts for the gap is not separated here.
 - The junk-input scoring (another question's activations) was not run: the loss comparison already shows no dependence on the question.
 
+## Fixed LoRA, tuned (`harness/hyper.py::lora_tune`, runs `/runs/hyper/lora-*`, summary `/runs/hyper/lora_tune.json`)
+
+Question: is the small gain above a matter of the update's shape and of tuning? A plain LoRA (A and B trained directly) on the same 835 answers (785 for training), the same loss and backward pass through frozen Qwen, 2 passes (394 steps of 4 answers). Each pass's merged weights are scored on 128 select problems × 1 answer through vLLM (Qwen as downloaded: 7.0%), and the best of the 8 checkpoints on MATH-500 with `heldout_eval`.
+
+| Config | Trainable | Held-out loss, pass 1 / 2 (no LoRA 0.3676) | Select accuracy, pass 1 / 2 | Cut at the cap, pass 1 / 2 |
+|---|---|---|---|---|
+| rank 32, `down_proj` + attention output (48 matrices), lr 1e-4 | 5.9M | 0.3135 / 0.3120 | 18.8 / 23.4 | 81 / 77% |
+| same, lr 3e-4 | 5.9M | 0.3160 / 0.3153 | 14.1 / 18.8 | 84 / 80% |
+| same, lr 1e-3 | 5.9M | 0.3457 / 0.3304 | **31.3** / 18.0 | 63 / 80% |
+| rank 8, `down_proj` only (24 matrices), lr 1e-3 | 0.9M | 0.3170 / 0.3145 | 18.8 / 18.8 | 81 / 80% |
+
+Best checkpoint (rank 32, lr 1e-3, pass 1) on MATH-500, first 250 problems × 2, paired with the cached original: 7.8% → 23.2%, **+15.4 ± 1.9** (84 answers wrong → right, 7 right → wrong); answers cut at the cap 94.4% → 74.6%.
+
+Reading:
+- Tuning and checkpoint selection move the fixed LoRA from about +6 (first run, one learning rate, last checkpoint, PyTorch scoring) to +15.4. That is at the level of one untrained-editor rollout (+16.6) and 8 points below fine-tuning all block tensors (+23.6).
+- The held-out loss does not predict accuracy: the best checkpoint on select has the worst loss of the eight (0.3457). Checkpoints have to be chosen on generated answers.
+- The grid is noisy (128 answers per cell, standard error about 4 points): seven of eight cells lie between 14 and 23%, and the best cell's 31.3% on select became 23.2% on MATH-500. The small shape (rank 8, `down_proj` only) at the higher learning rate is within noise of the rank-32 runs at lower rates, so this grid does not show that the larger shape matters.
+
 ## Cost
 
-Training answers about $6.50 (3.6 GPU-hours); two training runs about $5; scoring about $6.50, plus about $13 for a first set of scoring runs whose answers were lost (network-blocked workers could not return them; they now write to the volume). About 2.3e17 FLOPs on Qwen for data and training.
+Training answers about $6.50 (3.6 GPU-hours); two training runs about $5; scoring about $6.50, plus about $13 for a first set of scoring runs whose answers were lost (network-blocked workers could not return them; they now write to the volume). About 2.3e17 FLOPs on Qwen for data and training. The fixed-LoRA grid: four training runs of 37–54 minutes, eight select checks and one MATH-500 score, about $10.

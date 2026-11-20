@@ -2,6 +2,10 @@
 
 Changes to the prompt, the tools and the RL setup, newest first, with the reason for each.
 
+## 20 November 2026
+
+**Fixed LoRA, tuned: result** (`results/eval/hypernetwork.md`). Select accuracy (128 problems, Qwen as downloaded 7.0%) after pass 1 / pass 2: rank 32 on 48 matrices at lr 1e-4 18.8 / 23.4, at 3e-4 14.1 / 18.8, at 1e-3 31.3 / 18.0; rank 8 on `down_proj` at 1e-3 18.8 / 18.8. Best checkpoint on MATH-500 (250 problems × 2, paired): 7.8% → 23.2%, +15.4 ± 1.9. Tuning and choosing the checkpoint on generated answers raise the fixed LoRA from about +6 to +15.4; fine-tuning all block tensors stays ahead at +23.6. The held-out loss does not track accuracy (the best checkpoint has the worst loss).
+
 ## 19 November 2026
 
 **Fixed LoRA, tuned (launched)** (`harness/hyper.py::train_lora`, `lora_select`, `lora_tune`; `modal run -m harness.hyper::tune`). Tests whether the hypernetwork arm's small gain (+6 to +7 against +23.6 for fine-tuning) comes from the restricted update and the untuned learning rate. A plain LoRA trained on the same 835 answers through frozen Qwen, 2 passes, four configs: rank 32 on `down_proj` + attention output projections (48 matrices) at learning rate 1e-4, 3e-4, 1e-3; rank 8 on `down_proj` at 1e-3. Each epoch's merged weights are saved as an edit, scored on 128 select problems through vLLM, and the best is scored on MATH-500 with `heldout_eval` (250 problems × 2, paired with the cached original). Smoke test of the whole chain passed (`--tag lsmoke`).
