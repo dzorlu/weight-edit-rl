@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 19 November 2026
 
+**Fixed LoRA, tuned (launched)** (`harness/hyper.py::train_lora`, `lora_select`, `lora_tune`; `modal run -m harness.hyper::tune`). Tests whether the hypernetwork arm's small gain (+6 to +7 against +23.6 for fine-tuning) comes from the restricted update and the untuned learning rate. A plain LoRA trained on the same 835 answers through frozen Qwen, 2 passes, four configs: rank 32 on `down_proj` + attention output projections (48 matrices) at learning rate 1e-4, 3e-4, 1e-3; rank 8 on `down_proj` at 1e-3. Each epoch's merged weights are saved as an edit, scored on 128 select problems through vLLM, and the best is scored on MATH-500 with `heldout_eval` (250 problems × 2, paired with the cached original). Smoke test of the whole chain passed (`--tag lsmoke`).
+
 **Hypernetwork result** (`results/eval/hypernetwork.md`). Training answers: 14,928 generated, 835 correct and finished (491 problems). Trained 3 passes (591 steps) through frozen Qwen; held-out loss 0.3676 without a LoRA, 0.3150 with the hypernetwork, 0.3148 with the fixed LoRA of the same shape. MATH-500, 250 problems × 1 answer, generated in PyTorch with one LoRA per question: Qwen as downloaded 9.6%, fixed LoRA 15.6%, hypernetwork 16.4% (cut at the cap 91.6%, 85.2%, 84.0%). The hypernetwork does not use the question, and both are far below fine-tuning (+23.6) and the editor. Scoring fixes: batch 16 and 3 GPUs per run after a cuBLAS error at batch 48; shard answers are written to the volume (network-blocked workers could not return them, which lost one set of three scoring runs).
 
 ## 18 November 2026

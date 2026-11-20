@@ -439,6 +439,191 @@ def score_all(run_id: str = "", ckpt: int = 0, cond: str = "matched", dataset: s
     return res
 
 
+# ----------------------------------------------------------------------------- a plain fixed LoRA, tuned (no hypernetwork)
+# The same data, loss and backward pass through frozen Qwen as above, but A and B are trained directly, the rank and the set of
+# matrices can be larger, and the result is merged into the weights and scored through vLLM like any edit (paired with the
+# cached original, 2 answers per problem).
+LORA_SITES = {"down": ("mlp.down_proj",), "down+attn": ("mlp.down_proj", "self_attn.o_proj", "linear_attn.out_proj")}
+
+
+@app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, block_network=True, timeout=10 * 60 * 60,
+              memory=65536, cpu=8)
+def train_lora(run_id: str, rank: int = 32, sites: str = "down+attn", lr: float = 3e-4, epochs: int = 2, batch: int = 4,
+               target: str = DEFAULT_TARGET, max_rows: int = 0, val_rows: int = 64):
+    """Train one LoRA (rank `rank` on the matrices of LORA_SITES[sites]) on Qwen's own correct answers, through frozen Qwen.
+    After every epoch the merged tensors W + B @ A are saved as an edit in /runs/hyper/<run_id>/e<k>/work/edited."""
+    import json, math, os, random, time, torch, torch.nn as nn
+    from torch.utils.checkpoint import checkpoint
+    from safetensors.torch import save_file
+    from transformers import AutoTokenizer, AutoModelForImageTextToText
+    mdir, _ = base_dirs("", target, "math")
+    tok = AutoTokenizer.from_pretrained(mdir)
+    hf = AutoModelForImageTextToText.from_pretrained(mdir, dtype=torch.bfloat16).to("cuda").eval()
+    for p in hf.parameters():
+        p.requires_grad_(False)
+    mods = {n: m for n, m in hf.named_modules() if "vis" not in n.lower() and ".layers." in n and n.endswith(LORA_SITES[sites])}
+    names = sorted(mods)
+    A = nn.ParameterList([nn.Parameter(torch.randn(rank, mods[n].weight.shape[1], device="cuda") / math.sqrt(mods[n].weight.shape[1])) for n in names])
+    B = nn.ParameterList([nn.Parameter(torch.zeros(mods[n].weight.shape[0], rank, device="cuda")) for n in names])
+    on = {"v": True}
+
+    def make_hook(i):
+        def hook(m, inp, out):
+            if not on["v"]:
+                return out
+            x = inp[0]
+            return out + (x @ A[i].to(x.dtype).T) @ B[i].to(x.dtype).T
+        return hook
+    for i, n in enumerate(names):
+        mods[n].register_forward_hook(make_hook(i))
+
+    def nll(q, a):
+        x = torch.tensor([q + a]).cuda()
+        h = hf.model(input_ids=x).last_hidden_state[0]
+        pos = torch.arange(len(q) - 1, x.shape[1] - 1).cuda()
+
+        def head_nll(hc, nxt):
+            return -torch.log_softmax(hf.lm_head(hc).float(), -1).gather(-1, nxt[:, None]).sum()
+        loss = h.new_zeros((), dtype=torch.float32)
+        for c0 in range(0, len(pos), 256):
+            loss = loss + checkpoint(head_nll, h[pos[c0:c0 + 256]], x[0, pos[c0:c0 + 256] + 1], use_reentrant=False)
+        return loss / len(pos)
+    rows = _train_rows(tok, target)
+    rng = random.Random(0)
+    qids = sorted({r[0] for r in rows}); rng.shuffle(qids)   # the same validation problems as train_hyper
+    val_q = set(qids[:max(1, len(qids) // 16)])
+    val = [r for r in rows if r[0] in val_q][:val_rows]
+    tr = [r for r in rows if r[0] not in val_q]
+    if max_rows:
+        tr = tr[:max_rows]
+    params = list(A) + list(B)
+    n_par = sum(p.numel() for p in params)
+    cfg = {"run_id": run_id, "rank": rank, "sites": sites, "matrices": len(names), "lr": lr, "epochs": epochs, "params": n_par,
+           "train_rows": len(tr), "val_rows": len(val)}
+    print("LORA", json.dumps(cfg))
+    try:
+        hf.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        hf.train()
+    except Exception as e:
+        print("no layer checkpointing:", repr(e)[:200])
+    opt = torch.optim.AdamW(params, lr=lr, weight_decay=0.0)
+    steps_total = epochs * math.ceil(len(tr) / batch)
+    d = f"/runs/hyper/{run_id}"
+    os.makedirs(d, exist_ok=True)
+    json.dump(cfg, open(f"{d}/config.json", "w"), indent=1)
+    log = open(f"{d}/log.jsonl", "a")
+
+    def val_loss(with_lora=True):
+        on["v"] = with_lora
+        with torch.no_grad():
+            v = sum(float(nll(q, a)) for _, q, a in val) / len(val)
+        on["v"] = True
+        return v
+    base_val = val_loss(False)
+    step, t0 = 0, time.time()
+    for ep in range(1, epochs + 1):
+        order = list(range(len(tr))); rng.shuffle(order)
+        run = 0.0
+        for b0 in range(0, len(order), batch):
+            for i in order[b0:b0 + batch]:
+                _, q, a = tr[i]
+                loss = nll(q, a)
+                (loss / batch).backward()
+                run += float(loss.detach())
+            torch.nn.utils.clip_grad_norm_(params, 1.0)
+            for g in opt.param_groups:
+                g["lr"] = lr * min(1.0, (step + 1) / 20) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * step / steps_total)))
+            opt.step(); opt.zero_grad(set_to_none=True)
+            step += 1
+            if step % 25 == 0:
+                print(f"{run_id} ep {ep} step {step}/{steps_total} train loss {run / (25 * batch):.4f} {round(time.time() - t0)}s")
+                run = 0.0
+        ed = f"{d}/e{ep}/work/edited"
+        os.makedirs(ed, exist_ok=True)
+        with torch.no_grad():
+            for i, n in enumerate(names):
+                w = mods[n].weight.float() + B[i] @ A[i]
+                save_file({"t": w.to(torch.bfloat16).cpu()}, f"{ed}/{n}.weight.safetensors")
+        rec = {"epoch": ep, "step": step, "val_loss": round(val_loss(), 4), "val_loss_without_lora": round(base_val, 4), "seconds": round(time.time() - t0)}
+        log.write(json.dumps(rec) + "\n"); log.flush()
+        runs.commit()
+        print("EPOCH", run_id, json.dumps(rec))
+    return cfg
+
+
+@app.function(image=offline, gpu="L40S", volumes={"/weights": weights, "/runs": runs}, block_network=True, timeout=2 * 60 * 60,
+              memory=32768, cpu=8)
+def lora_select(run_path: str, n_items: int = 128, target: str = DEFAULT_TARGET):
+    """Accuracy of the edit in /runs/<run_path>/work/edited on the first `n_items` problems of the select split (1 answer each,
+    the harness's protocol and seeds through vLLM). Written to /runs/<run_path>/select.json."""
+    import json, os, shutil
+    from safetensors.torch import load_file, save_file
+    from harness.sft import _score
+    runs.reload()
+    mdir, pdir = base_dirs("", target, "math")
+    ids = json.load(open(f"{pdir}/splits.json"))["select"]
+    P = {}
+    for line in open(f"{pdir}/problems.jsonl"):
+        r = json.loads(line); P[r["id"]] = r
+    items = [{"qid": i, "prompt": _prompt(P[i]["problem"]), "answer": P[i]["answer"]} for i in ids if i in P][:n_items]
+    ed_dir = f"/runs/{run_path}/work/edited"
+    edits = {f[:-len(".safetensors")]: load_file(os.path.join(ed_dir, f))["t"] for f in sorted(os.listdir(ed_dir)) if f.endswith(".safetensors")}
+    dst = "/tmp/lora_model"
+    shutil.rmtree(dst, ignore_errors=True); os.makedirs(dst)
+    used = 0
+    for f in os.listdir(mdir):
+        src = os.path.join(mdir, f)
+        if f.endswith(".safetensors"):
+            sd = load_file(src)
+            for n, t in edits.items():
+                if n in sd:
+                    assert t.shape == sd[n].shape, (n, t.shape, sd[n].shape)
+                    sd[n] = t.to(sd[n].dtype); used += 1
+            save_file(sd, os.path.join(dst, f), metadata={"format": "pt"})
+        elif os.path.isfile(src):
+            shutil.copy(os.path.realpath(src), os.path.join(dst, f))
+    assert used == len(edits), f"{len(edits) - used} edited tensors were not found in the model files"
+    res = {"run_path": run_path, "edited_tensors": used, **_score(dst, "edited", items)}
+    json.dump(res, open(f"/runs/{run_path}/select.json", "w"), indent=1)
+    runs.commit()
+    print("SELECT", json.dumps(res))
+    return res
+
+
+@app.function(image=offline, volumes={"/runs": runs}, timeout=12 * 60 * 60, memory=4096)
+def lora_tune(tag: str = "lora", configs_json: str = "", epochs: int = 2, max_rows: int = 0, select_items: int = 128, heldout_limit: int = 250,
+              target: str = DEFAULT_TARGET):
+    """Train a small grid of fixed LoRAs in parallel, score every epoch of every config on the select split, and score the
+    best one on MATH-500 with heldout_eval (paired with the cached original, 2 answers per problem)."""
+    import json
+    from harness.target import heldout_eval
+    configs = json.loads(configs_json) if configs_json else [
+        {"name": "r32-all-lr1e-4", "rank": 32, "sites": "down+attn", "lr": 1e-4},
+        {"name": "r32-all-lr3e-4", "rank": 32, "sites": "down+attn", "lr": 3e-4},
+        {"name": "r32-all-lr1e-3", "rank": 32, "sites": "down+attn", "lr": 1e-3},
+        {"name": "r8-down-lr1e-3", "rank": 8, "sites": "down", "lr": 1e-3},
+    ]
+    trained = list(train_lora.starmap([(f"{tag}-{c['name']}", c["rank"], c["sites"], c["lr"], epochs, 4, target, max_rows) for c in configs]))
+    paths = [f"hyper/{tag}-{c['name']}/e{ep}" for c in configs for ep in range(1, epochs + 1)]
+    sel = list(lora_select.starmap([(p, select_items, target) for p in paths]))
+    best = max(sel, key=lambda r: r["accuracy"])
+    out = {"tag": tag, "configs": trained, "select": sel, "best": best["run_path"]}
+    out["heldout"] = heldout_eval.remote(best["run_path"], 2, heldout_limit, True, "", "math500", target)
+    json.dump(out, open(f"/runs/hyper/{tag}_tune.json", "w"), indent=1)
+    runs.commit()
+    print("TUNE", json.dumps(out)[:4000])
+    return out
+
+
+@app.local_entrypoint()
+def tune(tag: str = "lora", epochs: int = 2, max_rows: int = 0, select_items: int = 128, heldout_limit: int = 250, configs_json: str = "",
+         wait: bool = False):
+    if wait:
+        print(str(lora_tune.remote(tag, configs_json, epochs, max_rows, select_items, heldout_limit))[:3000])
+    else:
+        print("SPAWNED", lora_tune.spawn(tag, configs_json, epochs, max_rows, select_items, heldout_limit).object_id)
+
+
 # ----------------------------------------------------------------------------- entrypoints
 @app.local_entrypoint()
 def answers(target: str = DEFAULT_TARGET, n: int = 4, limit: int = 0):
