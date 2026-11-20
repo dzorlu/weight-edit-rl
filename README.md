@@ -170,3 +170,13 @@ Changes to the prompt, tools and setup, with the reason for each, are in [CHANGE
 ## Differences from arXiv 2611.09382
 
 Answers are capped at 8,192 tokens instead of 32,768. The held-out test uses 2 samples per problem instead of 4. The grader, the practice set and the prompt wording are our own.
+
+## Hypernetwork baseline
+
+`harness/hyper.py`: a one-pass hypernetwork that reads the target's activations on a question and writes a rank-8 LoRA, trained by backpropagating the target's loss through the frozen target. Architecture, pseudocode with tensor shapes and results: `results/eval/hypernetwork.md`.
+
+```
+uvx modal run --detach -m harness.hyper::answers                              # the target's own answers to practice problems
+uvx modal run --detach -m harness.hyper::train --run-id hyper1                # and --mode static --run-id static1
+uvx modal run --detach -m harness.hyper::score --run-id hyper1 --ckpt 3 --cond matched --n 1
+```
