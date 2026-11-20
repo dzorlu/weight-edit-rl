@@ -53,6 +53,27 @@ loss.backward()
 optimizer.step()                                       # updates the hypernetwork only
 ```
 
+Two passes through Qwen per training step; the gradient runs through the second only:
+
+```
+pass 1:  question → Qwen → X [24, N, 1024] ──────┐   (no gradient; X is fixed data)
+                                                 ▼
+                                           hypernetwork → A [24, 8, 3584], B [24, 1024, 8]
+                                                 │
+pass 2:  question + answer → Qwen + (A, B) → loss
+                                                 ▲
+         loss.backward(): loss → Qwen's 24 layers → A, B → hypernetwork
+```
+
+`X[l]` holds the vectors going into layer `l + 1` (index 0 is the token embeddings); the LoRA of a layer is written from the vectors going into that same layer.
+
+| | Pass 1 | Pass 2 |
+|---|---|---|
+| Input | the question | the question + the answer |
+| LoRA applied | no | yes |
+| Purpose | `X`, the hypernetwork's input | the loss |
+| Gradient | none | `loss.backward()` runs through this pass |
+
 At test time: steps 1 and 2 on the held-out question, then Qwen generates its answer with (A, B) applied. The `static` control replaces `P` in step 2 with a learned Parameter[24, 8, 512], so the question is not read.
 
 ## Results
