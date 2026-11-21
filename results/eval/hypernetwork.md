@@ -110,6 +110,26 @@ Reading:
 - The held-out loss does not predict accuracy: the best checkpoint on select has the worst loss of the eight (0.3457). Checkpoints have to be chosen on generated answers.
 - The grid is noisy (128 answers per cell, standard error about 4 points): seven of eight cells lie between 14 and 23%, and the best cell's 31.3% on select became 23.2% on MATH-500. The small shape (rank 8, `down_proj` only) at the higher learning rate is within noise of the rank-32 runs at lower rates, so this grid does not show that the larger shape matters.
 
+## Qwen3.5-2B (runs `/runs/hyper/hyper2b`, `/runs/hyper/lora2b-*`, summary `/runs/hyper/lora2b_tune.json`)
+
+Base model changed to Qwen3.5-2B (reasons: CHANGELOG, 20 November). Sizes: 24 layers, hidden 2048, `mlp.down_proj` [2048, 6144]; the hypernetwork writes A [24, 8, 6144] and B [24, 2048, 8] and has 103.8M trainable parameters. Data: the 2B's own answers to 3,732 practice problems × 1 sample at a 6,000-token cap (18.4M tokens); 1,280 correct and finished (34%); 1,275 used for training after the validation problems are held out. Settings from the 0.8B grid: learning rate 1e-3, 2 passes (638 steps of 4 answers), a checkpoint after each pass.
+
+| | Trainable | Held-out loss, pass 1 / 2 (no LoRA 0.2842) | Select accuracy, pass 1 / 2 (128 answers) |
+|---|---|---|---|
+| Hypernetwork (`hyper2b`) | 103.8M | 0.2395 / 0.2389 | not scored |
+| Fixed LoRA, rank 8 on `down_proj` (the hypernetwork's output shape) | 1.6M | 0.2430 / 0.2426 | 53.9 / 55.5 |
+| Fixed LoRA, rank 32 on 48 matrices | 9.4M | 0.2797 / 0.2635 | 51.6 / 55.5 |
+
+Best fixed LoRA (rank 8, pass 2) on MATH-500, first 250 problems × 2, 8,192-token cap, paired with the cached original: 38.0% → 51.2%, **+13.2 ± 1.8** (73 answers wrong → right, 7 right → wrong); answers cut at the cap 62.0% → 49.2%.
+
+References on the same problems: unedited 2B at the 8,192 cap 38.0%, at the 32,768 cap 67.4% (`cap_baseline.md`); editor rollouts on the 2B at 8,192 (2 per editor, 16 November): untrained +26.2 and +12.4, step-8 0 and +15.6.
+
+Reading:
+- The fixed LoRA gains about the same on the 2B (+13.2) as on the 0.8B (+15.4), from 1,275 answers instead of 785. It is below the unedited model with a 32,768-token cap (67.4%) and below the best editor rollout (64.2%).
+- The hypernetwork's held-out loss is slightly lower than the same-shape fixed LoRA's (0.2389 against 0.2426). On the 0.8B the loss did not predict accuracy, so this does not show that reading the question helps; the per-question scoring that would show it has not been run.
+- The two fixed-LoRA shapes are again within noise of each other on select (55.5% both after pass 2).
+- Both LoRA training runs logged pass 1 twice: the container was restarted once and the run started over (billed time about 1.5 times the training time).
+
 ## Cost
 
-Training answers about $6.50 (3.6 GPU-hours); two training runs about $5; scoring about $6.50, plus about $13 for a first set of scoring runs whose answers were lost (network-blocked workers could not return them; they now write to the volume). About 2.3e17 FLOPs on Qwen for data and training. The fixed-LoRA grid: four training runs of 37–54 minutes, eight select checks and one MATH-500 score, about $10.
+Training answers about $6.50 (3.6 GPU-hours); two training runs about $5; scoring about $6.50, plus about $13 for a first set of scoring runs whose answers were lost (network-blocked workers could not return them; they now write to the volume). About 2.3e17 FLOPs on Qwen for data and training. Billed (Modal, app `weight-edit`): hypernetwork on the 0.8B $57.69 including the lost scoring runs (the dollar figures earlier in this paragraph were estimates at the GPU rate and are about half the billed cost); the fixed-LoRA grid on the 0.8B $12.87; the 2B runs above $18.98.

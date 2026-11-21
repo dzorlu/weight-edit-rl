@@ -4,6 +4,10 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 20 November 2026
 
+**Hypernetwork arm on Qwen3.5-2B: training and fixed-LoRA result** (`results/eval/hypernetwork.md`). Training answers: 3,732 generated, 1,280 correct and finished (34%). Held-out loss (no LoRA 0.2842): hypernetwork 0.2395 / 0.2389 after pass 1 / 2; fixed LoRA of the same shape 0.2430 / 0.2426; rank 32 on 48 matrices 0.2797 / 0.2635. Select accuracy of the fixed LoRAs after pass 2: 55.5% both. Best fixed LoRA on MATH-500 (250 problems × 2, 8,192 cap, paired): 38.0% → 51.2%, +13.2 ± 1.8. Per-question scoring of the hypernetwork not run. Billed: $18.98.
+
+**Cost accounting corrected.** Costs now come from `modal billing`, not from GPU-hours at the L40S rate: a container bills about $2.85 per hour with its CPU and memory. Earlier estimates in this file and in chat were 1.6 to 1.9 times too low (hypernetwork on the 0.8B: billed $57.69; 16 untrained-editor rollouts: $65.63; fixed-LoRA grid: $12.87; 32K baseline: $7.00). Project total for November to date: $1,170.57.
+
 **Decision: Qwen3.5-2B is the base model for the hypernetwork experiments** (next runs: `harness.hyper` with `--target qwen3.5-2b`). Reasons, from our own measurements (`results/eval/cap_baseline.md`, `results/eval/hypernetwork.md`):
 - Qwen3.5-0.8B is not capable enough as a base. With four times the output budget it does not improve (8.4% at a 32,768-token cap against 7.8% at 8,192; 93% of answers never finish). Only 5.6% of its answers are correct and finished (835 of 14,928), so a model trained on its own answers sees a small, easy slice of the problems.
 - Qwen3.5-2B is capable when it finishes: 67.4% at the 32,768 cap and 38.0% at 8,192, with 98.5% of finished answers correct. 36% of its answers finish within 8,192 tokens and 68% within 32,768, so there are 6 to 12 times more usable training answers per generated answer, from a much wider range of problems.
