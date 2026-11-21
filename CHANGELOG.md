@@ -4,6 +4,8 @@ Changes to the prompt, the tools and the RL setup, newest first, with the reason
 
 ## 20 November 2026
 
+**Baseline with a 32,768-token cap** (`harness.target::cap`; `results/eval/cap_baseline.md`). Models as downloaded, MATH-500 first 250 problems × 2. Qwen3.5-0.8B: 8.4% (7.8% at the 8,192 cap), 93.4% of answers still cut at 32,768 tokens. Qwen3.5-2B: 67.4% (38.0% at 8,192), 32.4% still cut; finished within 8K / 16K / 32K: 36 / 52 / 68%. The 0.8B's loop is non-termination; the 2B mostly needs more room, and its best edit at the 8,192 cap (64.2%) equals the unedited model at 32,768.
+
 **Fixed LoRA, tuned: result** (`results/eval/hypernetwork.md`). Select accuracy (128 problems, Qwen as downloaded 7.0%) after pass 1 / pass 2: rank 32 on 48 matrices at lr 1e-4 18.8 / 23.4, at 3e-4 14.1 / 18.8, at 1e-3 31.3 / 18.0; rank 8 on `down_proj` at 1e-3 18.8 / 18.8. Best checkpoint on MATH-500 (250 problems × 2, paired): 7.8% → 23.2%, +15.4 ± 1.9. Tuning and choosing the checkpoint on generated answers raise the fixed LoRA from about +6 to +15.4; fine-tuning all block tensors stays ahead at +23.6. The held-out loss does not track accuracy (the best checkpoint has the worst loss).
 
 ## 19 November 2026
