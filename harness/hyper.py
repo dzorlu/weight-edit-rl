@@ -617,11 +617,11 @@ def lora_tune(tag: str = "lora", configs_json: str = "", epochs: int = 2, max_ro
 
 @app.local_entrypoint()
 def tune(tag: str = "lora", epochs: int = 2, max_rows: int = 0, select_items: int = 128, heldout_limit: int = 250, configs_json: str = "",
-         wait: bool = False):
+         wait: bool = False, target: str = DEFAULT_TARGET):
     if wait:
-        print(str(lora_tune.remote(tag, configs_json, epochs, max_rows, select_items, heldout_limit))[:3000])
+        print(str(lora_tune.remote(tag, configs_json, epochs, max_rows, select_items, heldout_limit, target))[:3000])
     else:
-        print("SPAWNED", lora_tune.spawn(tag, configs_json, epochs, max_rows, select_items, heldout_limit).object_id)
+        print("SPAWNED", lora_tune.spawn(tag, configs_json, epochs, max_rows, select_items, heldout_limit, target).object_id)
 
 
 # ----------------------------------------------------------------------------- entrypoints
